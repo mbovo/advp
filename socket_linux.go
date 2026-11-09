@@ -1,0 +1,114 @@
+//go:build linux
+
+package main
+
+import (
+	"fmt"
+	"time"
+
+	"golang.org/x/sys/unix"
+)
+
+const ipTTLCmsgType = unix.IP_TTL
+
+func platformKernelAssignsID() bool { return true }
+
+func platformSetup(c *sockConn, cfg *sockConfig) error {
+	fd := c.fd
+	if !c.raw {
+		// Ping sockets report ICMP errors (TTL exceeded, unreachable...) only
+		// through the socket error queue.
+		lvl, opt := unix.IPPROTO_IP, unix.IP_RECVERR
+		if c.v6 {
+			lvl, opt = unix.IPPROTO_IPV6, unix.IPV6_RECVERR
+		}
+		if err := unix.SetsockoptInt(fd, lvl, opt, 1); err == nil {
+			c.recvErr = true
+		}
+	}
+	if cfg.MarkSet {
+		if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_MARK, cfg.Mark); err != nil {
+			cfg.warn(fmt.Sprintf("failed to set mark: %v", err))
+		}
+	}
+	if cfg.IfName != "" {
+		if err := unix.SetsockoptString(fd, unix.SOL_SOCKET, unix.SO_BINDTODEVICE, cfg.IfName); err != nil {
+			return fmt.Errorf("SO_BINDTODEVICE %s: %v", cfg.IfName, err)
+		}
+	}
+	if cfg.PMTU != "" {
+		v4 := map[string]int{"do": unix.IP_PMTUDISC_DO, "dont": unix.IP_PMTUDISC_DONT, "want": unix.IP_PMTUDISC_WANT, "probe": unix.IP_PMTUDISC_PROBE}
+		v6 := map[string]int{"do": unix.IPV6_PMTUDISC_DO, "dont": unix.IPV6_PMTUDISC_DONT, "want": unix.IPV6_PMTUDISC_WANT, "probe": unix.IPV6_PMTUDISC_PROBE}
+		var err error
+		if c.v6 {
+			err = unix.SetsockoptInt(fd, unix.IPPROTO_IPV6, unix.IPV6_MTU_DISCOVER, v6[cfg.PMTU])
+		} else {
+			err = unix.SetsockoptInt(fd, unix.IPPROTO_IP, unix.IP_MTU_DISCOVER, v4[cfg.PMTU])
+		}
+		if err != nil {
+			return fmt.Errorf("IP_MTU_DISCOVER: %v", err)
+		}
+	}
+	return nil
+}
+
+// readErrQueue reads one entry of the Linux socket error queue.
+func readErrQueue(c *sockConn) (Event, bool, error) {
+	n, oobn, _, _, err := unix.Recvmsg(c.fd, c.buf, c.oob, unix.MSG_ERRQUEUE|unix.MSG_DONTWAIT)
+	if err != nil {
+		if err == unix.EAGAIN || err == unix.EINTR {
+			return Event{}, false, nil
+		}
+		return Event{}, false, err
+	}
+	at := time.Now()
+	msgs, err := unix.ParseSocketControlMessage(c.oob[:oobn])
+	if err != nil {
+		return Event{}, false, nil
+	}
+	var ee extErr
+	found := false
+	for _, m := range msgs {
+		switch {
+		case (m.Header.Level == unix.IPPROTO_IP && m.Header.Type == unix.IP_RECVERR) ||
+			(m.Header.Level == unix.IPPROTO_IPV6 && m.Header.Type == unix.IPV6_RECVERR):
+			ee, found = parseExtErr(m.Data)
+		case m.Header.Level == unix.SOL_SOCKET && m.Header.Type == unix.SCM_TIMESTAMP:
+			if _, ts := parseCmsgs(c.oob[:oobn]); !ts.IsZero() {
+				at = ts
+			}
+		}
+	}
+	if !found {
+		return Event{}, false, nil
+	}
+	// Local errors (e.g. EMSGSIZE with -M do) are queued with an empty payload.
+	if ee.Origin == eeOriginLocal {
+		return Event{Kind: EvError, TTL: -1, At: at, Local: true, Errno: ee.Errno, Info: ee.Info}, true, nil
+	}
+	if ee.Origin != eeOriginICMP && ee.Origin != eeOriginICMP6 {
+		return Event{}, false, nil
+	}
+	data := c.buf[:n]
+	echo := byte(icmp4Echo)
+	if c.v6 {
+		echo = icmp6Echo
+	}
+	if len(data) < 8 || data[0] != echo {
+		return Event{}, false, nil
+	}
+	return Event{
+		Kind: EvError, TTL: -1, At: at, From: ee.Offender,
+		ID: uint16(data[4])<<8 | uint16(data[5]), Seq: uint16(data[6])<<8 | uint16(data[7]),
+		Type: int(ee.Type), Code: int(ee.Code), Info: ee.Info,
+	}, true, nil
+}
+
+func (c *sockConn) HasErrQueue() bool { return c.recvErr }
+
+func localErrorText(e *Event) string {
+	if unix.Errno(e.Errno) == unix.EMSGSIZE {
+		return fmt.Sprintf("local error: message too long, mtu=%d", e.Info)
+	}
+	return "local error: " + unix.Errno(e.Errno).Error()
+}
