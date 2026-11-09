@@ -209,8 +209,8 @@ If stdout is not a terminal, `--live` falls back to normal line output.
 ## Development
 
 You need Go (see `go.mod`) and [just](https://github.com/casey/just).
-Run `just tools` once to install the pinned golangci-lint, govulncheck and
-GoReleaser. Then:
+Run `just tools` once to install the pinned golangci-lint, govulncheck,
+GoReleaser and actionlint. Then:
 
 | Recipe | What it does |
 |---|---|
@@ -218,17 +218,76 @@ GoReleaser. Then:
 | `just install` | `go install` with version info |
 | `just cross` | cross-compile linux/darwin × amd64/arm64 into `dist/` |
 | `just test`, `just test-race` | unit tests (`just test -run Pinger -v` passes flags through) |
+| `just smoke` | end-to-end smoke tests against the built binary |
+| `just test-scripts` | tests for the release scripts |
+| `just test-all` | unit + script + smoke tests |
 | `just cover`, `just cover-html` | coverage summary / browser report |
-| `just smoke` | real ICMP ping to 127.0.0.1 with the built binary |
+| `just ping-loopback` | quick manual ping of 127.0.0.1 with the built binary |
 | `just fmt`, `just fmt-check` | gofmt + goimports |
 | `just vet`, `just lint`, `just lint-fix` | `go vet` and golangci-lint, run once per GOOS (darwin and linux) |
+| `just lint-ci` | actionlint for the workflows, shellcheck for the scripts |
 | `just vuln` | govulncheck |
 | `just tidy`, `just tidy-check` | `go mod tidy` |
-| `just check` | everything CI runs |
+| `just check` | pre-push gate: fmt, tidy, vet, lint, race tests, script tests, cross build |
 | `just setcap`, `just ping-group` | Linux: grant `cap_net_raw` / enable ping sockets (sudo) |
-| `just release-check`, `just release-snapshot` | validate GoReleaser config / local snapshot build |
-| `just tag v1.2.3` | tag and push; the Release workflow publishes binaries |
+| `just next-version` | version the next merge to `main` would release |
+| `just release-check`, `just release-snapshot` | validate the GoReleaser config / build a local snapshot into `dist/` |
+| `just tag v1.2.3` | tag and push a release by hand |
 | `just clean` | remove build output |
+
+### Tests
+
+- **Unit tests** (`just test-race`) need no privileges or network. The engine
+  and the CLI run against a simulated network (`internal/icmptest`) that
+  produces replies, loss, duplicates, ICMP errors, send failures and route
+  changes.
+- **Real-socket tests** in `internal/icmp` ping 127.0.0.1 and ::1. They skip
+  when ICMP sockets are not allowed. Set `ADVP_REQUIRE_ICMP=1` to make them fail
+  instead (CI does).
+- **Smoke tests** (`just smoke`, build tag `smoke`, in `test/smoke`) run the
+  compiled binary end to end:
+  - version, help and every usage error with its exit code;
+  - IPv4 and IPv6 loopback pings and packet options;
+  - `-q`, `-l`, `-w`, `-f`;
+  - hop probing and `--hops-max` route discovery;
+  - CSV and HTML exports;
+  - SIGQUIT and SIGINT;
+  - the `--live` view driven through a pty with `script(1)`.
+
+  Set `ADVP_BIN=/path/to/advp` to test a prebuilt binary, e.g. a release
+  artifact. On Linux, ICMP needs
+  `sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"` (`just ping-group`).
+
+### CI and releases
+
+| Workflow | Trigger | What it does |
+|---|---|---|
+| `ci.yml` | push to any branch except `main`; pull request opened, updated or reopened | runs `test.yml` |
+| `test.yml` | called by the other two | lint (darwin + linux), unit tests and smoke tests on Ubuntu and macOS with real ICMP, shellcheck + release-script tests, govulncheck, GoReleaser snapshot build (artifacts kept 7 days) |
+| `release.yml` | push to `main` (i.e. a merge), push of a `v*` tag, manual run | runs `test.yml`, then tags and publishes a GitHub release with GoReleaser |
+
+On `main`, `scripts/next-version.sh` computes the next version from the
+[Conventional Commits](https://www.conventionalcommits.org/) since the last
+`vX.Y.Z` tag:
+
+| Commits since the last tag | Release |
+|---|---|
+| `type!:` subject or `BREAKING CHANGE:` footer | major (minor while < v1.0.0) |
+| `feat:` | minor |
+| `fix:`, `perf:`, `refactor:`, or any non-conventional subject | patch |
+| only `docs:`, `test:`, `ci:`, `chore:`, `style:`, `build:` | no release |
+| `[skip release]` in the message | commit ignored |
+
+Merge commits are ignored, so the PR's commits (or the squash-merge title)
+decide the version. The workflow pushes the tag and GoReleaser publishes:
+
+- tar.gz archives for linux/darwin × amd64/arm64;
+- deb, rpm and apk packages, whose post-install grants `cap_net_raw`;
+- checksums and a grouped changelog.
+
+To choose a version yourself, push a tag (`just tag v1.0.0`). The workflow
+releases it as is, and later automatic releases continue from it. Run
+`just next-version` to preview what the next merge would release.
 
 ### Layout
 
@@ -237,14 +296,13 @@ cmd/advp/            main package (thin wrapper around internal/cli)
 internal/cli/        iputils-compatible option parsing, resolution, socket setup
 internal/ping/       ping engine: scheduling, reply matching, hop probes, iputils output
 internal/icmp/       ICMP encode/decode and sockets (socket_linux.go, socket_darwin.go)
+internal/icmptest/   simulated icmp.Conn used by the unit tests
 internal/stats/      samples, loss/percentile/jitter aggregation, time buckets
 internal/report/     terminal report and charts, live view, CSV and HTML export
 internal/tty/        terminal cbreak mode and key decoding for the live view
 internal/version/    build metadata injected with -ldflags (falls back to VCS info)
-.github/workflows/   CI (lint, tests on Linux and macOS, ICMP smoke test, govulncheck) and release
+test/smoke/          end-to-end tests of the built binary (build tag "smoke")
+scripts/             next-version.sh (release versioning) and its tests
+packaging/           Linux package scripts (post-install setcap)
+.github/workflows/   ci.yml, test.yml, release.yml (see above)
 ```
-
-The tests drive the full engine (sending, replies, loss, duplicates,
-ICMP errors, hop route changes, report and exports) through a simulated
-network connection (`icmp.Conn`), so they need no privileges or network
-access.

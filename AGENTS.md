@@ -27,9 +27,16 @@ Use the `justfile` (`just` lists every recipe). The essentials:
 | `just build` / `just run -c 5 1.1.1.1` | build `bin/advp` with version ldflags / build and run |
 | `just test`, `just test-race` | unit tests (no network or privileges needed) |
 | `just lint` / `just vet` | run once per GOOS (`darwin`, `linux`): socket code is build-tagged |
-| `just check` | **run before every commit**: fmt-check, tidy-check, vet, lint, race tests, cross build (same as CI) |
-| `just smoke` | real ICMP ping to 127.0.0.1 (fails inside sandboxes that block ICMP) |
-| `just tools` | install the pinned golangci-lint **v2**, govulncheck, GoReleaser |
+| `just check` | **run before every commit**: fmt-check, tidy-check, vet, lint, race tests, script tests, cross build |
+| `just smoke` | end-to-end tests of the built binary (`test/smoke`, build tag `smoke`); ICMP cases skip when blocked |
+| `just test-scripts` | tests for `scripts/next-version.sh` |
+| `just lint-ci` | actionlint (workflows) + shellcheck (scripts) |
+| `just release-check` / `just release-snapshot` | GoReleaser config check / local snapshot into `dist/` |
+| `just tools` | install the pinned golangci-lint **v2**, govulncheck, GoReleaser, actionlint |
+
+Tool binaries can be overridden with `GOLANGCI_LINT`, `GORELEASER` and
+`ACTIONLINT`. `.golangci.yml` sets `build-tags: [smoke]`, so the smoke tests are
+linted too; vet them with `go vet -tags smoke`.
 
 The lint config is golangci-lint **v2** format (`.golangci.yml`). golangci-lint
 v1.x cannot load Go 1.27 export data and reports bogus `typecheck` errors. Point
@@ -46,10 +53,13 @@ The dependency direction is strict, with no cycles:
 | `internal/cli` | hand-written getopt clone (`options.go`), help text (`usage.go`), resolution, privilege checks, opens sockets, builds `ping.Config` |
 | `internal/ping` | the engine (`pinger.go`), `Options` + defaults, route discovery (`trace.go`), iputils formatting (`format.go`), reverse-DNS cache (`names.go`) |
 | `internal/icmp` | `Conn` interface + `Config` (`conn.go`), encode/decode (`packet.go`), sockets: `socket_unix.go` + `socket_linux.go` / `socket_darwin.go` / `socket_other.go` |
+| `internal/icmptest` | test-only simulated `icmp.Conn` (replies, injected events, send failures) |
 | `internal/stats` | `Sample`, `Series` (16-bit seq wrap), `Aggregate`, `Bucketize`, `NiceBucket`, `GuessHops` |
 | `internal/report` | `Input` snapshot → final text report (`text.go`, `chart.go`, `style.go`), live `Dashboard` (`dashboard.go`), CSV/HTML+SVG (`html.go`) |
 | `internal/tty` | cbreak terminal mode + key decoding for `--live` |
 | `internal/version` | `Version`/`Commit`/`Date` via `-ldflags -X`, falls back to `debug.ReadBuildInfo` |
+| `test/smoke` | end-to-end tests of the compiled binary (build tag `smoke`) |
+| `scripts/`, `packaging/` | release versioning script + tests; Linux package post-install |
 
 ### Engine (`ping.Pinger.Run`)
 
@@ -128,11 +138,21 @@ The dependency direction is strict, with no cycles:
 
 ## Conventions
 
-- **Tests.** Engine tests drive `ping.New` with `fakeConn` (`pinger_test.go`)
-  and `route` (`trace_test.go`), which simulate latency, loss, duplicates, ICMP
-  errors and route changes. Add a fake-based test for every behavior change.
-  `ping` tests cannot import `cli` (import cycle), so set `Options` fields
-  directly.
+- **Tests.** Every behavior change needs a test at the right layer:
+  - **Engine and CLI:** use the simulated socket `internal/icmptest.Conn`.
+    It supports replies, injected events (duplicates, local errors), send
+    failures and close tracking. `ping` tests use `testPinger` and `route`
+    (`trace_test.go`). `cli` tests replace the package variable `openConn` via
+    `useFakeNet` (`run_test.go`) to run `cli.Run` end to end. `ping` tests
+    cannot import `cli` (import cycle), so set `Options` fields directly.
+  - **Real sockets:** `internal/icmp/socket_unix_test.go` pings loopback and
+    must skip through `skipNoICMP`, which fails instead when
+    `ADVP_REQUIRE_ICMP=1`.
+  - **Binary behavior** (output format, exit codes, signals, `--live`):
+    `test/smoke`. It uses `needICMP` for anything that sends packets, and
+    checks timing loosely because it runs on real networks.
+  - **Release versioning:** `scripts/next-version_test.sh`. The scripts must
+    stay bash 3.2 compatible (macOS `/bin/bash`).
 - **Messages.** Wording mirrors iputils, including capitalised error strings
   (`ST1005` is disabled on purpose).
 - **New flags.**
@@ -144,13 +164,38 @@ The dependency direction is strict, with no cycles:
 - **Exports.** Unchecked writes are allowed only for terminal output
   (`io.WriteString`) and `csv.Writer.Write`; the errcheck config lists them.
   Everything else checks errors.
-- **Commits.** Imperative subject, body explaining *why*, and the trailer
+- **Commits.** Use Conventional Commits (`feat:`, `fix:`, `docs:`, `ci:`,
+  `test:`, `chore:`, `refactor:`, `type!:`), because merges to `main` are
+  versioned and released automatically from them (see Releases). Add a body
+  explaining *why*, and the trailer
   `Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>`.
 - **The README is co-edited by the maintainer.**
   - Run `git status` / `git log` before editing it; the maintainer has
     committed README changes mid-session before (`a86a653`).
   - Keep the "vibecoded" CAUTION banner at the top. Its cost table is a
     model-made estimate (commit `8efe936`); update it only when asked.
+
+## CI and releases
+
+- **`ci.yml`:** runs on pushes to every branch except `main`, and on PR
+  opened/synchronize/reopened/ready_for_review. It calls the reusable
+  `test.yml`: lint per GOOS, unit and smoke tests on Ubuntu and macOS with
+  real ICMP (`ADVP_REQUIRE_ICMP=1`; Linux sets `ping_group_range`), shellcheck
+  and script tests, govulncheck, and a GoReleaser snapshot.
+- **`release.yml`:** runs on push to `main` (merges), on a `v*` tag, and by
+  manual dispatch. It runs `test.yml`, then the `release` job:
+  - on `main`, `scripts/next-version.sh` decides the version (or that there
+    is nothing to release);
+  - it pushes an annotated tag with `GITHUB_TOKEN` (which does not re-trigger
+    workflows);
+  - it runs `goreleaser release`.
+
+  Pushed `v*` tags are released as is. The release job is serialized
+  (`concurrency: release`).
+- **`.goreleaser.yaml` (v2):** produces tar.gz archives, deb/rpm/apk packages
+  whose postinstall `packaging/postinstall.sh` runs `setcap cap_net_raw+ep`,
+  checksums, and a changelog grouped by commit type. The ldflags inject
+  `internal/version`.
 
 ## Agent environment gotchas (sandboxed sessions)
 
@@ -161,7 +206,9 @@ The dependency direction is strict, with no cycles:
 - **No module downloads.** sumdb writes are denied. Build tools from the module
   cache with a wrapper module in `$TMPDIR`
   (`GOPROXY=off GOSUMDB=off GOFLAGS=-mod=mod go build …`). That is how
-  golangci-lint v2.14.0 was built. Set `GOLANGCI_LINT_CACHE="$TMPDIR/…"`.
+  golangci-lint v2.14.0, GoReleaser v2.18.2 and actionlint v1.7.12 were built.
+  Set `GOLANGCI_LINT_CACHE="$TMPDIR/…"`. shellcheck is not installed locally;
+  only CI runs it.
 - **Read-only user caches.** gopls cannot write its cache; `gopls imports`
   silently does nothing.
 - **Writable locations.** Only the repo and `$TMPDIR`. `sed -i` failed;
@@ -172,7 +219,8 @@ The dependency direction is strict, with no cycles:
 ## Status and open items
 
 History (oldest first): flat prototype → `e68ec88` project layout + tooling →
-`21ae59e` `--live` → `8b9a024` `--hops-max` → `8efe936` cost estimate.
+`21ae59e` `--live` → `8b9a024` `--hops-max` → `8efe936` cost estimate →
+`0da33aa` AGENTS.md → test suites, CI and automatic releases.
 
 Not verified yet:
 
@@ -181,12 +229,18 @@ Not verified yet:
 - Raw-socket paths (root).
 - IPv6 end to end.
 - Tracing real routers, which rate-limit ICMP.
-- `govulncheck`, GoReleaser, and the GitHub workflows have never run.
+- The GitHub workflows have never run on GitHub. They pass actionlint, and a
+  local `goreleaser release --snapshot` built every archive and package, but
+  that is all. shellcheck and govulncheck have never run.
+- **First release:** the history before the Conventional Commits convention
+  is non-conventional, so the first merge to `main` would release **v0.0.1**.
+  Push a tag first (e.g. `v0.1.0`) to start elsewhere.
 
 Known gaps:
 
 - `-T`, `-F`, `-N` are accepted but not implemented; `-B` and `-U` are no-ops.
-- `icmp` coverage is ~27% (socket code is untestable without network).
+- Total unit-test coverage is ~88%. The remaining gaps are in the socket code
+  (exercised in CI with real ICMP), `version.init`, and terminal-only paths.
 - There is no LICENSE; that is the maintainer's choice.
 
 Possible next steps (suggestions, not requested yet): scrolling in the live
