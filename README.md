@@ -13,10 +13,10 @@
 > - **Quality:** human review is not a guarantee of correctness. Use it at your
 >   own risk, especially with raw sockets and elevated privileges.
 > - **Environmental cost:** the coding session that produced this project made
->   about **250 model requests** (including one code-review sub-agent). Each
->   request re-reads the whole conversation, which grew past 250k tokens, so the
->   session processed roughly **30 – 45 million input tokens** (mostly cached)
->   and generated about **0.3 – 0.45 million output tokens** (code, tests,
+>   about **290 model requests** (including one code-review sub-agent). Each
+>   request re-reads the whole conversation, which grew past 300k tokens, so the
+>   session processed roughly **40 – 58 million input tokens** (mostly cached)
+>   and generated about **0.33 – 0.5 million output tokens** (code, tests,
 >   workflows, commands, reasoning). These are estimates reconstructed by the
 >   model itself, not metered values. Rough cost (inference only, excluding
 >   model training and hardware manufacturing; real values vary widely by model
@@ -24,12 +24,10 @@
 >
 >   | Resource | Estimate for this session |
 >   |----------|---------------------------|
->   | Energy   | ~ 1.8 kWh            |
->   | CO₂      | ~ 0.7 kg CO₂e        |
->   | Water    | ~ 3 L                |
+>   | Energy   | ~ 2.2 kWh            |
+>   | CO₂      | ~ 0.9 kg CO₂e        |
+>   | Water    | ~ 4 L                |
 >
->   That is roughly 3 – 18 electric-kettle boils, or one to two dishwasher
->   cycles.
 
 `advp` is a drop-in replacement for iputils `ping` written in Go. It
 supports most of the GNU/Linux `ping` command line and prints the same
