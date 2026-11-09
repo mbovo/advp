@@ -160,3 +160,120 @@ func TestDashboardManyHops(t *testing.T) {
 		t.Fatal("final report misses traced path info or hop sparklines")
 	}
 }
+
+func TestViewsCycle(t *testing.T) {
+	v := ViewReport
+	seen := map[string]bool{}
+	for i := 0; i < int(numViews); i++ {
+		seen[v.String()] = true
+		v = v.Next()
+	}
+	if v != ViewReport || len(seen) != int(numViews) {
+		t.Fatalf("views do not cycle: %v", seen)
+	}
+}
+
+func TestDashboardRenderUsesTerminalSize(t *testing.T) {
+	var b bytes.Buffer
+	d := NewDashboard(&b, false)
+	d.Clear()
+	d.Render(mkInput([]int{1, 2}, false), DashStatus{Title: "h"})
+	if !strings.HasPrefix(b.String(), "\x1b[H\x1b[2J") || strings.Count(b.String(), "\x1b[K") < 10 {
+		t.Fatalf("unexpected frame: %q", b.String()[:min(80, b.Len())])
+	}
+}
+
+func TestTermWidthFromEnv(t *testing.T) {
+	t.Setenv("COLUMNS", "99")
+	if w := TermWidth(); w != 99 && w <= 20 {
+		t.Fatalf("width %d", w)
+	}
+	t.Setenv("COLUMNS", "junk")
+	if TermWidth() <= 20 {
+		t.Fatal("fallback width")
+	}
+}
+
+func TestFormatting(t *testing.T) {
+	for d, want := range map[time.Duration]string{
+		500 * time.Microsecond: "0.500", 5 * time.Millisecond: "5.00", 50 * time.Millisecond: "50.0", 5 * time.Second: "5000",
+	} {
+		if got := fmtMs(d); got != want {
+			t.Errorf("fmtMs(%v)=%s want %s", d, got, want)
+		}
+	}
+	if fmtDur(1500*time.Millisecond) != "2s" || fmtDur(1234*time.Microsecond) != "1ms" {
+		t.Error("fmtDur")
+	}
+	for _, c := range []struct {
+		bucket, span time.Duration
+		want         string
+	}{
+		{50 * time.Millisecond, time.Second, "15:04:05.00"},
+		{500 * time.Millisecond, time.Minute, "15:04:05.0"},
+		{time.Minute, time.Hour, "15:04:05"},
+		{time.Hour, 48 * time.Hour, "01-02 15:04:05"},
+	} {
+		if got := timeLayout(c.bucket, c.span); got != c.want {
+			t.Errorf("timeLayout(%v,%v)=%q want %q", c.bucket, c.span, got, c.want)
+		}
+	}
+	st := style{on: false}
+	for loss, want := range map[float64]string{0: "0.0%", 2: "2.0%", 50: "50.0%"} {
+		a := stats.Agg{Sent: 100, Lost: int(loss)}
+		if got := fmtLoss(st, a); got != want {
+			t.Errorf("fmtLoss %v: %q", loss, got)
+		}
+	}
+	if fmtLoss(st, stats.Agg{Sent: 2, Pending: 2}) != "…" {
+		t.Error("pending-only loss")
+	}
+	if pad("ab", 4, true) != "  ab" || pad("abcdef", 3, false) != "abcdef" || truncVis("abcdef", 4) != "abc…" || truncVis("abc", 1) != "a" {
+		t.Error("pad / truncVis")
+	}
+}
+
+func TestInputNamesAndBuckets(t *testing.T) {
+	in := mkInput([]int{1, 2, 3}, false)
+	if in.addrLabel("10.0.0.1") != "10.0.0.1" {
+		t.Fatal("no resolver")
+	}
+	in.Name = func(ip string) string { return "gw.lan" }
+	if in.addrLabel("10.0.0.1") != "10.0.0.1 (gw.lan)" {
+		t.Fatal(in.addrLabel("10.0.0.1"))
+	}
+	in.Bucket = 7 * time.Second
+	if in.tableBucket() != 7*time.Second {
+		t.Fatal("explicit --bucket ignored")
+	}
+	in.Interval = time.Millisecond
+	if in.minBucket() != 10*time.Millisecond {
+		t.Fatal("minimum bucket")
+	}
+}
+
+func TestTableDropsColumns(t *testing.T) {
+	tb := &table{headers: []string{"A", "Bbbbbbbbbb", "C"}, align: "lrr", drop: []int{1}}
+	tb.rows = [][]string{{"1", "2", "3"}}
+	wide := strings.Join(tb.render(style{}, 0), "\n")
+	narrow := strings.Join(tb.render(style{}, 12), "\n")
+	if !strings.Contains(wide, "Bbbbbbbbbb") || strings.Contains(narrow, "Bbbbbbbbbb") {
+		t.Fatalf("column dropping:\n%s\n%s", wide, narrow)
+	}
+}
+
+func TestExportErrors(t *testing.T) {
+	in := mkInput([]int{1}, false)
+	bad := filepath.Join(t.TempDir(), "missing", "x")
+	if WriteCSV(bad, in) == nil || WriteHTML(bad, in) == nil {
+		t.Fatal("writing into a missing directory must fail")
+	}
+}
+
+func TestOutageSummary(t *testing.T) {
+	var b bytes.Buffer
+	Write(&b, mkInput([]int{1, -1, -1, -1, 2, -1, 3}, false))
+	if !strings.Contains(b.String(), "2 loss episode(s) · longest 3 consecutive probe(s)") {
+		t.Fatalf("outages:\n%s", b.String())
+	}
+}

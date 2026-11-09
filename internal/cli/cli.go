@@ -22,6 +22,9 @@ import (
 	"github.com/mbovo/advp/internal/version"
 )
 
+// openConn opens ICMP sockets; tests replace it with simulated connections.
+var openConn = icmp.Open
+
 // Run executes advp with args (without the program name) and returns the
 // process exit code: 0 on success, 1 when no reply was received, 2 on errors.
 func Run(args []string, stdout, stderr io.Writer) int {
@@ -90,7 +93,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	conn, err := icmp.Open(cfg)
+	conn, err := openConn(cfg)
 	if err != nil {
 		fmt.Fprintf(stderr, "advp: %v\n", err)
 		return 2
@@ -109,10 +112,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		hc.TTL, hc.Ident, hc.RecordRoute, hc.PreferRaw = ttl, -1, false, false
 		var hw []string
 		hc.Warnings = &hw
-		c, err := icmp.Open(hc)
+		c, err := openConn(hc)
 		if err == nil && c.FilterID() && c.ID() == conn.ID() {
 			c.Close()
-			c, err = icmp.Open(hc)
+			c, err = openConn(hc)
 		}
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("hop probing disabled: %v", err))

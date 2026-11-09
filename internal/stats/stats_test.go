@@ -69,3 +69,58 @@ func TestNiceBucket(t *testing.T) {
 		t.Errorf("got %v", got)
 	}
 }
+
+func TestSeriesWrapAndLookup(t *testing.T) {
+	s := NewSeries()
+	if s.Last() != nil || s.Lookup(1) != nil {
+		t.Fatal("empty series")
+	}
+	t0 := time.Unix(0, 0)
+	s.Add(1, t0)
+	s.Add(65537, t0.Add(time.Second)) // wraps to wire seq 1
+	if got := s.Lookup(1); got == nil || got.Seq != 65537 {
+		t.Fatalf("wire seq must map to the latest probe, got %+v", got)
+	}
+	if s.Last().Seq != 65537 || s.Last().TTL != -1 || len(s.Samples) != 2 {
+		t.Fatal("Last / defaults")
+	}
+}
+
+func TestGuessHops(t *testing.T) {
+	cases := map[int][2]int{57: {64, 7}, 64: {64, 0}, 30: {32, 2}, 117: {128, 11}, 250: {255, 5}, 300: {0, 0}}
+	for ttl, want := range cases {
+		if i, h := GuessHops(ttl); i != want[0] || h != want[1] {
+			t.Errorf("GuessHops(%d) = %d,%d want %v", ttl, i, h, want)
+		}
+	}
+}
+
+func TestPercentileAndLossEdges(t *testing.T) {
+	if percentile(nil, 50) != 0 || percentile([]float64{7}, 99) != 7 || percentile([]float64{1, 2}, 100) != 2 {
+		t.Fatal("percentile edges")
+	}
+	if (Agg{Sent: 3, Pending: 3}).LossPct() != 0 {
+		t.Fatal("loss with only pending probes must be 0")
+	}
+	a := Aggregate([]Sample{{Sent: time.Unix(0, 0), Err: true}}, time.Unix(0, 0), time.Hour)
+	if a.Lost != 1 || a.Errors != 1 || a.Pending != 0 {
+		t.Fatalf("an ICMP error is a completed loss: %+v", a)
+	}
+	if Bucketize(nil, time.Unix(10, 0), time.Unix(5, 0), time.Second, time.Unix(0, 0), 0) != nil {
+		t.Fatal("empty range must give no buckets")
+	}
+	if NiceBucket(10*24*time.Hour, 2, time.Second) != 192*time.Hour {
+		t.Fatalf("beyond the step table: %v", NiceBucket(10*24*time.Hour, 2, time.Second))
+	}
+	if NiceBucket(time.Second, 0, 10*time.Millisecond) != time.Second {
+		t.Fatal("n < 1 is treated as 1")
+	}
+}
+
+func TestJitterAcrossBuckets(t *testing.T) {
+	t0 := time.Unix(0, 0)
+	b := Bucketize(mkSamples(t0, []int{10, 30, 20}, time.Second), t0, t0.Add(3*time.Second), time.Second, t0.Add(time.Hour), 0)
+	if b[0].HasJitter || !b[1].HasJitter || b[1].Jitter != 20*time.Millisecond || b[2].Jitter != 10*time.Millisecond {
+		t.Fatalf("per-bucket jitter must use the previous bucket's last RTT: %+v", b)
+	}
+}

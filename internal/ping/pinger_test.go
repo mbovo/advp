@@ -2,63 +2,19 @@ package ping
 
 import (
 	"bytes"
-	"encoding/binary"
 	"io"
 	"math/rand/v2"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/mbovo/advp/internal/icmp"
+	"github.com/mbovo/advp/internal/icmptest"
 	"github.com/mbovo/advp/internal/report"
 )
-
-// fakeConn simulates the network: each sent echo produces (or not) an event
-// after a simulated delay.
-type fakeConn struct {
-	id    uint16
-	ch    chan icmp.Event
-	reply func(seq uint16) (icmp.Event, time.Duration, bool)
-	mu    sync.Mutex
-	sent  int
-}
-
-func (f *fakeConn) Send(pkt []byte) (time.Time, error) {
-	now := time.Now()
-	seq := binary.BigEndian.Uint16(pkt[6:])
-	f.mu.Lock()
-	f.sent++
-	f.mu.Unlock()
-	if ev, d, ok := f.reply(seq); ok {
-		ev.ID, ev.Seq, ev.At = f.id, seq, now.Add(d)
-		if ev.TTL == 0 {
-			ev.TTL = -1
-		}
-		time.AfterFunc(d, func() { f.ch <- ev })
-	}
-	return now, nil
-}
-
-func (f *fakeConn) Read(timeout time.Duration) (icmp.Event, bool, error) {
-	select {
-	case ev := <-f.ch:
-		return ev, true, nil
-	case <-time.After(timeout):
-		return icmp.Event{}, false, nil
-	}
-}
-func (f *fakeConn) ID() uint16     { return f.id }
-func (f *fakeConn) FilterID() bool { return true }
-func (f *fakeConn) Raw() bool      { return false }
-func (f *fakeConn) Close() error   { return nil }
-
-func newFake(id uint16, reply func(seq uint16) (icmp.Event, time.Duration, bool)) *fakeConn {
-	return &fakeConn{id: id, ch: make(chan icmp.Event, 1024), reply: reply}
-}
 
 func testPinger(t *testing.T, setOpts func(o *Options), mainReply func(uint16) (icmp.Event, time.Duration, bool), hops int) (*Pinger, *bytes.Buffer, *bytes.Buffer) {
 	t.Helper()
@@ -67,7 +23,7 @@ func testPinger(t *testing.T, setOpts func(o *Options), mainReply func(uint16) (
 	setOpts(opt)
 	var hcs []icmp.Conn
 	for ttl := 1; ttl <= hops; ttl++ {
-		hcs = append(hcs, newFake(uint16(100+ttl), func(seq uint16) (icmp.Event, time.Duration, bool) {
+		hcs = append(hcs, icmptest.New(uint16(100+ttl), func(seq uint16) (icmp.Event, time.Duration, bool) {
 			from := net.IPv4(10, 0, 0, byte(ttl)).To4()
 			if ttl == 2 && seq > 2 {
 				from = net.IPv4(10, 0, 1, 2).To4() // route change on hop 2
@@ -81,7 +37,7 @@ func testPinger(t *testing.T, setOpts func(o *Options), mainReply func(uint16) (
 	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
 	p := New(Config{
 		Options: opt, Host: "test.example", Dst: net.IPv4(192, 0, 2, 10).To4(), IsName: true,
-		Conn: newFake(42, mainReply), HopConns: hcs, Stdout: out, Stderr: errOut,
+		Conn: icmptest.New(42, mainReply), HopConns: hcs, Stdout: out, Stderr: errOut,
 		Signals: make(chan os.Signal), SockKind: "fake",
 	})
 	return p, out, errOut
@@ -146,17 +102,16 @@ func TestPingerDupsErrorsAndExitCodes(t *testing.T) {
 	}
 	p, out, _ := testPinger(t, func(o *Options) { o.Count, o.Interval, o.IntervalSet, o.NoReport = 4, ms(10), true, true }, reply, 0)
 	// Inject a duplicate for seq 1.
-	fc := p.conn.(*fakeConn)
-	orig := fc.reply
-	fc.reply = func(seq uint16) (icmp.Event, time.Duration, bool) {
+	fc := p.conn.(*icmptest.Conn)
+	fc.SetReply(func(seq uint16) (icmp.Event, time.Duration, bool) {
+		ev, d, ok := reply(seq)
 		if seq == 1 {
-			ev, d, ok := orig(seq)
-			ev.ID, ev.Seq, ev.At, ev.TTL = fc.id, seq, time.Now().Add(2*d), -1
-			time.AfterFunc(2*d, func() { fc.ch <- ev })
-			return ev, d, ok
+			dup := ev
+			dup.Seq = seq
+			fc.Inject(dup, 2*d)
 		}
-		return orig(seq)
-	}
+		return ev, d, ok
+	})
 	if code := p.Run(); code != 0 {
 		t.Fatalf("exit %d", code)
 	}
@@ -228,8 +183,7 @@ func TestFloodPacing(t *testing.T) {
 
 func TestLocalErrorEvent(t *testing.T) {
 	p, out, errOut := testPinger(t, func(o *Options) { o.Count, o.Interval, o.IntervalSet, o.NoReport = 2, ms(10), true, true }, fastReply(time.Millisecond), 0)
-	fc := p.conn.(*fakeConn)
-	fc.ch <- icmp.Event{Kind: icmp.KindError, Local: true, Errno: 90, Info: 1500, TTL: -1}
+	p.conn.(*icmptest.Conn).Inject(icmp.Event{Kind: icmp.KindError, Local: true, Errno: 90, Info: 1500}, 0)
 	if code := p.Run(); code != 0 {
 		t.Fatalf("exit %d", code)
 	}

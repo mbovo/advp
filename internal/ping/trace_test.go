@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mbovo/advp/internal/icmp"
+	"github.com/mbovo/advp/internal/icmptest"
 )
 
 var dstIP = net.IPv4(192, 0, 2, 10).To4()
@@ -23,7 +24,7 @@ type route struct {
 func (r route) conns(n int) []icmp.Conn {
 	var cs []icmp.Conn
 	for ttl := 1; ttl <= n; ttl++ {
-		cs = append(cs, newFake(uint16(200+ttl), func(seq uint16) (icmp.Event, time.Duration, bool) {
+		cs = append(cs, icmptest.New(uint16(200+ttl), func(seq uint16) (icmp.Event, time.Duration, bool) {
 			d := time.Duration(ttl) * time.Millisecond
 			switch {
 			case r.silent[ttl]:
@@ -49,7 +50,7 @@ func tracePinger(t *testing.T, r route, maxHops int) (*Pinger, *bytes.Buffer) {
 	out := &bytes.Buffer{}
 	p := New(Config{
 		Options: opt, Host: "test.example", Dst: dstIP, IsName: true,
-		Conn: newFake(42, fastReply(5*time.Millisecond)), HopConns: r.conns(maxHops),
+		Conn: icmptest.New(42, fastReply(5*time.Millisecond)), HopConns: r.conns(maxHops),
 		Stdout: out, Stderr: &bytes.Buffer{}, Signals: make(chan os.Signal), SockKind: "fake",
 	})
 	p.traceGap, p.traceWait = 10*time.Millisecond, 150*time.Millisecond
