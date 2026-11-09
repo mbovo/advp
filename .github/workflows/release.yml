@@ -29,10 +29,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Decide the release tag
@@ -57,7 +57,7 @@ jobs:
           git tag -a "$next" -m "advp $next"
           git push origin "$next"
           echo "tag=$next" >> "$GITHUB_OUTPUT"
-      - uses: goreleaser/goreleaser-action@v6
+      - uses: goreleaser/goreleaser-action@v7
         if: steps.tag.outputs.tag != ''
         with:
           version: "~> v2"
