@@ -172,7 +172,7 @@ tidy:
 tidy-check:
     go mod tidy -diff
 
-# Pre-push gate: fmt, tidy, vet, lint, race tests, script tests, cross build (CI also runs smoke, vuln, snapshot)
+# Pre-push gate: fmt, tidy, vet, lint, race tests, script tests, cross build (CI also runs smoke and a GoReleaser snapshot)
 [group('quality')]
 check: fmt-check tidy-check vet lint test-race test-scripts cross
 

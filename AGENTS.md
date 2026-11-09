@@ -35,8 +35,8 @@ Use the `justfile` (`just` lists every recipe). The essentials:
 | `just tools` | install the pinned golangci-lint **v2**, govulncheck, GoReleaser, actionlint |
 
 No recipe requires a preinstalled tool. golangci-lint goes through the wrapper
-below, while govulncheck, GoReleaser and actionlint run as `go run pkg@<pinned>`
-(the same as CI for govulncheck). Override any of them with `GOLANGCI_LINT`,
+below, while govulncheck, GoReleaser and actionlint run as `go run pkg@<pinned>`.
+Override any of them with `GOLANGCI_LINT`,
 `GOVULNCHECK`, `GORELEASER` or `ACTIONLINT`. Pinned versions live at the top of
 the justfile; keep them in sync with the workflows.
 
@@ -198,7 +198,8 @@ The dependency direction is strict, with no cycles:
   opened/synchronize/reopened/ready_for_review. It calls the reusable
   `test.yml`: lint per GOOS, unit and smoke tests on Ubuntu and macOS with
   real ICMP (`ADVP_REQUIRE_ICMP=1`; Linux sets `ping_group_range`), shellcheck
-  and script tests, govulncheck, and a GoReleaser snapshot.
+  and script tests, and a GoReleaser snapshot. govulncheck is not part of CI;
+  run `just vuln` locally.
 - **`release.yml`:** runs on push to `main` (merges), on a `v*` tag, and by
   manual dispatch. It runs `test.yml`, then the `release` job:
   - on `main`, `scripts/next-version.sh` decides the version (or that there
@@ -248,7 +249,8 @@ Not verified yet:
 - Tracing real routers, which rate-limit ICMP.
 - The GitHub workflows have never run on GitHub. They pass actionlint, and a
   local `goreleaser release --snapshot` built every archive and package, but
-  that is all. shellcheck and govulncheck have never run.
+  that is all. shellcheck has never run. govulncheck runs locally only
+  (`just vuln`; its last run found no vulnerabilities).
 - **First release:** the history before the Conventional Commits convention
   is non-conventional, so the first merge to `main` would release **v0.0.1**.
   Push a tag first (e.g. `v0.1.0`) to start elsewhere.

@@ -243,7 +243,7 @@ versions into `$GOBIN` if you also want them on your PATH. Then:
 | `just fmt`, `just fmt-check` | gofmt + goimports |
 | `just vet`, `just lint`, `just lint-fix` | `go vet` and golangci-lint, run once per GOOS (darwin and linux) |
 | `just lint-ci` | actionlint for the workflows, shellcheck for the scripts |
-| `just vuln` | govulncheck |
+| `just vuln` | govulncheck (local only, not part of CI) |
 | `just tidy`, `just tidy-check` | `go mod tidy` |
 | `just check` | pre-push gate: fmt, tidy, vet, lint, race tests, script tests, cross build |
 | `just setcap`, `just ping-group` | Linux: grant `cap_net_raw` / enable ping sockets (sudo) |
@@ -280,7 +280,7 @@ versions into `$GOBIN` if you also want them on your PATH. Then:
 | Workflow | Trigger | What it does |
 |---|---|---|
 | `ci.yml` | push to any branch except `main`; pull request opened, updated or reopened | runs `test.yml` |
-| `test.yml` | called by the other two | lint (darwin + linux), unit tests and smoke tests on Ubuntu and macOS with real ICMP, shellcheck + release-script tests, govulncheck, GoReleaser snapshot build (artifacts kept 7 days) |
+| `test.yml` | called by the other two | lint (darwin + linux), unit tests and smoke tests on Ubuntu and macOS with real ICMP, shellcheck + release-script tests, GoReleaser snapshot build (artifacts kept 7 days) |
 | `release.yml` | push to `main` (i.e. a merge), push of a `v*` tag, manual run | runs `test.yml`, then tags and publishes a GitHub release with GoReleaser |
 
 On `main`, `scripts/next-version.sh` computes the next version from the
