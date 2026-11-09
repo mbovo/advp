@@ -34,3 +34,15 @@ func TestParseArgsGetoptStyle(t *testing.T) {
 		t.Errorf("expected a warning for -T")
 	}
 }
+
+func TestParseLive(t *testing.T) {
+	for _, flag := range []string{"--live", "--tui", "--dashboard"} {
+		o, err := parseArgs([]string{flag, "h"})
+		if err != nil || !o.Live {
+			t.Errorf("%s: live=%v err=%v", flag, o != nil && o.Live, err)
+		}
+	}
+	if o, _ := parseArgs([]string{"h"}); o.Live {
+		t.Error("live must be off by default")
+	}
+}

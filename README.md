@@ -15,7 +15,9 @@ the whole session:
   loss, latency percentiles, jitter and per-hop latency/loss.
 - **Terminal charts**: an RTT chart (p50 bars, p50→p90 band, max markers,
   fully lost columns), plus sparklines for loss, jitter and each hop.
-- **Live dashboard** (`--tui`): a full-screen view that refreshes while the ping runs.
+- **Live report** (`--live`): instead of per-packet lines, a full-screen version
+  of the final report (summary, hops, RTT chart, timeline) that is redrawn on
+  every packet sent and received. See [Live view](#live-view).
 - **Exports**: `--csv` writes every probe; `--html` writes a self-contained
   report with SVG charts that show values on hover.
 
@@ -48,7 +50,7 @@ non-root users cannot use intervals below 2 ms or a preload above 3.
 ```sh
 advp 1.1.1.1                       # like ping, Ctrl-C prints summary + report
 advp -c 100 -i 0.2 example.com     # 100 probes, 200 ms apart
-advp -w 600 --tui example.com      # 10-minute live dashboard
+advp -w 600 --live example.com     # 10-minute live report
 advp -q -w 3600 --html net.html --csv net.csv 8.8.8.8   # 1-hour unattended capture
 advp --hops 4 --bucket 1m gw.lan   # watch 4 hops, 1-minute timeline rows
 ```
@@ -99,7 +101,7 @@ Exit codes match iputils: `0` if replies were received, `1` if none were
 
 | Option | Meaning |
 |---|---|
-| `--tui`, `--dashboard` | live full-screen dashboard |
+| `--live` (aliases `--tui`, `--dashboard`) | full-screen live report, redrawn on every packet |
 | `--hops N` / `--no-hops` | number of first hops to probe (default 2) |
 | `--hop-interval D` | hop probe interval (default `max(1s, -i)`) |
 | `--bucket D` | timeline row width (default: auto, about 20 rows) |
@@ -110,6 +112,25 @@ Exit codes match iputils: `0` if replies were received, `1` if none were
 | `--color auto\|always\|never`, `--no-color` | ANSI colors (honours `NO_COLOR`) |
 
 Durations accept Go syntax (`500ms`, `1m30s`) or seconds (`0.5`).
+
+## Live view
+
+`advp --live <host>` opens a full-screen view on the terminal's alternate
+screen in place of the per-packet lines. It shows the same sections as the
+final report (summary, first hops, RTT chart with loss/jitter/hop sparklines,
+the latest timeline rows) plus the most recent replies. It is redrawn after
+every probe sent and every reply or ICMP error. Frames are paced
+adaptively (at least 20 ms apart, more if drawing is slow), so `-f` floods
+don't overload the terminal, and the view follows terminal resizes.
+
+| Key | Action |
+|---|---|
+| `q`, `Esc`, `Ctrl-C` | stop; the classic summary and the full report are printed to the normal screen |
+| `p`, `Space` | pause/resume redrawing (probing and statistics continue) |
+| `v`, `Tab` | switch view: report (chart + table) → chart → table |
+| `r`, `Ctrl-L` | clear and redraw |
+
+If stdout is not a terminal, `--live` falls back to normal line output.
 
 ## Notes on the statistics
 
@@ -154,7 +175,8 @@ internal/cli/        iputils-compatible option parsing, resolution, socket setup
 internal/ping/       ping engine: scheduling, reply matching, hop probes, iputils output
 internal/icmp/       ICMP encode/decode and sockets (socket_linux.go, socket_darwin.go)
 internal/stats/      samples, loss/percentile/jitter aggregation, time buckets
-internal/report/     terminal report and charts, live dashboard, CSV and HTML export
+internal/report/     terminal report and charts, live view, CSV and HTML export
+internal/tty/        terminal cbreak mode and key decoding for the live view
 internal/version/    build metadata injected with -ldflags (falls back to VCS info)
 .github/workflows/   CI (lint, tests on Linux and macOS, ICMP smoke test, govulncheck) and release
 ```

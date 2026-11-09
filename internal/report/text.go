@@ -322,3 +322,9 @@ func Write(w io.Writer, in *Input) {
 		fmt.Fprintln(w, l)
 	}
 }
+
+// timelineRows is the number of rows of the full timeline table.
+func (in *Input) timelineRows() int {
+	b := in.tableBucket()
+	return int((in.span() + b - 1) / b)
+}
