@@ -27,7 +27,7 @@ var longWithArg = map[string]bool{
 	"html": true, "color": true, "chart-height": true,
 }
 var longFlags = map[string]bool{
-	"help": true, "version": true, "tui": true, "dashboard": true,
+	"help": true, "version": true, "live": true, "tui": true, "dashboard": true,
 	"no-hops": true, "no-report": true, "no-color": true,
 }
 
@@ -234,8 +234,8 @@ func applyLong(o *ping.Options, name, val string) error {
 		return errHelp
 	case "version":
 		return errVersion
-	case "tui", "dashboard":
-		o.TUI = true
+	case "live", "tui", "dashboard":
+		o.Live = true
 	case "no-hops":
 		o.Hops = 0
 	case "no-report":

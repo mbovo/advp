@@ -2,6 +2,7 @@ package report
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,11 +62,38 @@ func TestDashboardRender(t *testing.T) {
 	var b bytes.Buffer
 	d := NewDashboard(&b, true)
 	d.Begin()
-	d.Render(mkInput([]int{1, 2, 3}, true), DashStatus{Title: "h", State: "running", Elapsed: 3 * time.Second, Recent: []string{"64 bytes from h"}})
+	d.RenderSize(mkInput([]int{1, 2, 3}, true), DashStatus{Title: "h", State: "running", Elapsed: 3 * time.Second, LastSeq: 3, Keys: true, Recent: []string{"64 bytes from h"}}, 120, 60)
 	d.End()
 	out := b.String()
-	if !strings.Contains(out, "\x1b[?1049h") || !strings.Contains(out, "\x1b[?1049l") || !strings.Contains(out, "advp ▸ PING h") {
-		t.Fatalf("unexpected dashboard output: %q", out)
+	for _, want := range []string{"\x1b[?1049h", "\x1b[?1049l", "advp ▸ PING h", "icmp_seq 3", "view: report", "RTT over time", "Timeline"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("dashboard output misses %q", want)
+		}
+	}
+}
+
+func TestDashboardFrameFitsTerminal(t *testing.T) {
+	d := NewDashboard(io.Discard, true)
+	for _, size := range [][2]int{{80, 24}, {120, 40}, {200, 60}, {40, 10}} {
+		for v := ViewReport; v < numViews; v++ {
+			for _, paused := range []bool{false, true} {
+				in := mkInput([]int{1, 2, -1, 4, 5, 6, 7, 8, 9}, true)
+				in.Width = size[0]
+				lines := d.frame(in, DashStatus{Title: "h", View: v, Paused: paused, Keys: true, Recent: []string{"a", "b", "c", "d"}}, size[0], size[1])
+				if len(lines) != size[1] {
+					t.Fatalf("%dx%d view %v: %d lines", size[0], size[1], v, len(lines))
+				}
+				if !strings.Contains(lines[len(lines)-1], "quit") {
+					t.Fatalf("%dx%d view %v: footer missing", size[0], size[1], v)
+				}
+				if paused && !strings.Contains(lines[len(lines)-1], "PAUSED") {
+					t.Fatalf("paused state not shown")
+				}
+				if size[1] >= 40 && v == ViewChart && !strings.Contains(strings.Join(lines, "\n"), "RTT over time") {
+					t.Fatalf("chart view without chart")
+				}
+			}
+		}
 	}
 }
 

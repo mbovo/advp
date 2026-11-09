@@ -49,7 +49,7 @@ type Options struct {
 	HopInterval time.Duration
 	Bucket      time.Duration
 	ChartHeight int
-	TUI         bool
+	Live        bool // --live: full-screen report refreshed on every packet
 	NoReport    bool
 	Color       string // auto, always, never
 	CSV         string

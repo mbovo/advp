@@ -3,6 +3,7 @@ package ping
 import (
 	"bytes"
 	"encoding/binary"
+	"io"
 	"math/rand/v2"
 	"net"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/mbovo/advp/internal/icmp"
+	"github.com/mbovo/advp/internal/report"
 )
 
 // fakeConn simulates the network: each sent echo produces (or not) an event
@@ -236,5 +238,64 @@ func TestLocalErrorEvent(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "errors") || p.nreceived != 2 {
 		t.Fatalf("local error must not hit a sample:\n%s", out.String())
+	}
+}
+
+func TestLiveRendersEveryPacket(t *testing.T) {
+	p, out, _ := testPinger(t, func(o *Options) { o.Count, o.Interval, o.IntervalSet, o.Live = 5, ms(100), true, true }, fastReply(2*time.Millisecond), 1)
+	p.dash = report.NewDashboard(p.out, false)
+	if code := p.Run(); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if p.frames < 5 {
+		t.Fatalf("only %d frames for 5 probes", p.frames)
+	}
+	s := out.String()
+	enter, leave := strings.Index(s, "\x1b[?1049h"), strings.LastIndex(s, "\x1b[?1049l")
+	if enter < 0 || leave < enter || !strings.Contains(s[leave:], "advp report") {
+		t.Fatalf("final report must follow the live view")
+	}
+	if !strings.Contains(s[enter:leave], "icmp_seq 5") {
+		t.Fatalf("live frames never showed the last probe")
+	}
+}
+
+func TestLiveKeys(t *testing.T) {
+	r, w := io.Pipe()
+	p, out, _ := testPinger(t, func(o *Options) { o.Interval, o.IntervalSet, o.Live = ms(20), true, true }, fastReply(time.Millisecond), 0)
+	p.dash = report.NewDashboard(p.out, false)
+	p.keysIn = r
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		w.Write([]byte("v"))
+		time.Sleep(100 * time.Millisecond)
+		w.Write([]byte("q"))
+	}()
+	start := time.Now()
+	p.Run()
+	if time.Since(start) > 2*time.Second {
+		t.Fatal("q did not stop the session")
+	}
+	if p.view != report.ViewChart || !strings.Contains(out.String(), "view: chart") {
+		t.Fatalf("view key not applied (view=%v)", p.view)
+	}
+}
+
+func TestLivePauseStopsRedraws(t *testing.T) {
+	r, w := io.Pipe()
+	p, _, _ := testPinger(t, func(o *Options) { o.Interval, o.IntervalSet, o.Live = ms(10), true, true }, fastReply(time.Millisecond), 0)
+	p.dash = report.NewDashboard(p.out, false)
+	p.keysIn = r
+	go func() {
+		w.Write([]byte("p"))
+		time.Sleep(400 * time.Millisecond)
+		w.Write([]byte("q"))
+	}()
+	p.Run()
+	if p.ntransmitted < 20 {
+		t.Fatalf("probing must continue while paused, sent %d", p.ntransmitted)
+	}
+	if p.frames > 5 {
+		t.Fatalf("%d frames drawn while paused", p.frames)
 	}
 }

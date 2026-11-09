@@ -59,7 +59,9 @@ IPv6 options:
   -N <nodeinfo opt>  (accepted, not supported)
 
 advp extensions:
-  --tui, --dashboard     live full-screen dashboard instead of per-packet lines
+  --live                 full-screen live report refreshed on every packet sent
+                         and received (keys: q quit, p pause, v view, r redraw);
+                         --tui and --dashboard are aliases
   --hops <n>             number of first hops to monitor (default 2, 0 disables)
   --no-hops              do not probe the first hops
   --hop-interval <dur>   interval between hop probes (default max(1s, -i))

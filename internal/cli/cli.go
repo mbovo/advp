@@ -18,6 +18,7 @@ import (
 
 	"github.com/mbovo/advp/internal/icmp"
 	"github.com/mbovo/advp/internal/ping"
+	"github.com/mbovo/advp/internal/tty"
 	"github.com/mbovo/advp/internal/version"
 )
 
@@ -139,17 +140,26 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		host = strings.TrimSuffix(host, ".")
 	}
 	dash := false
-	if opt.TUI {
+	var keys io.Reader
+	if opt.Live {
 		if stdoutTTY {
 			dash = true
+			signal.Notify(sigs, syscall.SIGWINCH)
+			// Single key presses without echo; Ctrl-C still raises SIGINT.
+			if in := os.Stdin; term.IsTerminal(int(in.Fd())) {
+				if restore, err := tty.Cbreak(int(in.Fd())); err == nil {
+					defer restore()
+					keys = in
+				}
+			}
 		} else {
-			fmt.Fprintln(stderr, "advp: warning: --tui needs a terminal, falling back to line output")
+			fmt.Fprintln(stderr, "advp: warning: --live needs a terminal, falling back to line output")
 		}
 	}
 	return ping.New(ping.Config{
 		Options: opt, Host: host, Dst: dst, IsName: isName, Conn: conn, HopConns: hops,
 		Stdout: stdout, Stderr: stderr, Signals: sigs, Color: color, Privileged: root,
-		SockKind: kind, Dashboard: dash,
+		SockKind: kind, Dashboard: dash, Keys: keys,
 	}).Run()
 }
 

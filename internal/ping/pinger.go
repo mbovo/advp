@@ -16,6 +16,7 @@ import (
 	"github.com/mbovo/advp/internal/icmp"
 	"github.com/mbovo/advp/internal/report"
 	"github.com/mbovo/advp/internal/stats"
+	"github.com/mbovo/advp/internal/tty"
 )
 
 type connEvent struct {
@@ -86,6 +87,16 @@ type Pinger struct {
 	wg     sync.WaitGroup
 	recent []string
 	dash   *report.Dashboard
+
+	// live view state
+	keysIn    io.Reader
+	keys      chan tty.Key
+	view      report.View
+	paused    bool
+	dirty     bool
+	lastFrame time.Time
+	frameGap  time.Duration
+	frames    int
 }
 
 // Config wires a Pinger to its sockets, output and environment.
@@ -109,6 +120,9 @@ type Config struct {
 	SockKind string
 	// Dashboard enables the live full-screen view (Stdout must be a terminal).
 	Dashboard bool
+	// Keys is the keyboard input for the live view (optional, normally a
+	// terminal in cbreak mode).
+	Keys io.Reader
 }
 
 // New returns a Pinger ready to Run. The Pinger takes ownership of the
@@ -117,7 +131,7 @@ func New(c Config) *Pinger {
 	p := &Pinger{
 		opt: c.Options, out: c.Stdout, errOut: c.Stderr, host: c.Host, dst: c.Dst,
 		v6: c.Dst.To4() == nil, isName: c.IsName, conn: c.Conn, sigs: c.Signals,
-		color: c.Color, root: c.Privileged, sockKind: c.SockKind, names: newNameCache(),
+		color: c.Color, root: c.Privileged, sockKind: c.SockKind, names: newNameCache(), keysIn: c.Keys,
 	}
 	for i, hc := range c.HopConns {
 		p.hops = append(p.hops, &hopState{ttl: i + 1, conn: hc, series: stats.NewSeries()})
@@ -128,14 +142,76 @@ func New(c Config) *Pinger {
 	return p
 }
 
+// Frame pacing for the live view: a frame is drawn after every send/reply,
+// but never more often than frameGap, which adapts to the rendering cost.
+const (
+	minFrameGap = 20 * time.Millisecond
+	maxFrameGap = time.Second
+)
+
+// renderDash draws a live frame now.
 func (p *Pinger) renderDash(now time.Time) {
 	state := "running"
-	if p.sendingDone {
+	switch {
+	case p.stopping:
+		state = "stopping"
+	case p.sendingDone:
 		state = "waiting for last replies"
 	}
 	in := p.reportInput(now, false)
 	in.End = now
-	p.dash.Render(in, report.DashStatus{Title: p.targetString(), State: state, Elapsed: now.Sub(p.start), Recent: p.recent})
+	p.dash.Render(in, report.DashStatus{
+		Title: p.targetString(), State: state, Elapsed: now.Sub(p.start), LastSeq: p.ntransmitted,
+		Recent: p.recent, View: p.view, Paused: p.paused, Keys: p.keysIn != nil, Updated: now,
+	})
+	p.frames++
+	p.dirty = false
+	p.lastFrame = time.Now()
+	p.frameGap = min(max(3*p.lastFrame.Sub(now), minFrameGap), maxFrameGap)
+}
+
+// frameNow draws immediately (used right after a send) when the frame budget
+// allows; otherwise the pending paced frame will pick the change up.
+func (p *Pinger) frameNow() {
+	if p.dash != nil && !p.paused && time.Since(p.lastFrame) >= p.frameGap {
+		p.renderDash(time.Now())
+	}
+}
+
+// readKeys decodes keyboard input until EOF; it may stay blocked in Read
+// after Run returns, which is harmless for a CLI.
+func (p *Pinger) readKeys() {
+	buf := make([]byte, 64)
+	for {
+		n, err := p.keysIn.Read(buf)
+		for _, k := range tty.Decode(buf[:n]) {
+			select {
+			case p.keys <- k:
+			case <-p.done:
+				return
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+func (p *Pinger) handleKey(k tty.Key) {
+	switch k {
+	case tty.KeyQuit:
+		p.stopping = true
+	case tty.KeyPause:
+		p.paused = !p.paused
+	case tty.KeyView:
+		p.view = p.view.Next()
+		p.dash.Clear()
+	case tty.KeyRedraw:
+		p.dash.Clear()
+	}
+	if !p.stopping {
+		p.renderDash(time.Now())
+	}
 }
 
 func (p *Pinger) targetString() string {
@@ -560,11 +636,17 @@ func (p *Pinger) Run() int {
 	if p.opt.Deadline > 0 {
 		deadlineC = time.After(p.opt.Deadline)
 	}
-	var renderC <-chan time.Time
+	// Live view: frames follow sends and replies (paced by frameC); the ticker
+	// keeps the clock and in-flight/lost accounting fresh when idle.
+	var tickC, frameC <-chan time.Time
 	if p.dash != nil {
-		t := time.NewTicker(500 * time.Millisecond)
+		t := time.NewTicker(time.Second)
 		defer t.Stop()
-		renderC = t.C
+		tickC = t.C
+		p.keys = make(chan tty.Key, 16)
+		if p.keysIn != nil {
+			go p.readKeys()
+		}
 		p.renderDash(time.Now())
 	}
 
@@ -580,6 +662,7 @@ func (p *Pinger) Run() int {
 		select {
 		case ce := <-p.events:
 			p.handle(ce)
+			p.dirty = true
 		case <-p.sendTimer.C:
 			if p.canSend() {
 				p.sendProbe()
@@ -588,6 +671,8 @@ func (p *Pinger) Run() int {
 					next = now.Add(p.sendTick())
 				}
 				p.scheduleSend(next)
+				p.dirty = true
+				p.frameNow()
 			}
 		case <-hopC:
 			if !p.sendingDone {
@@ -597,18 +682,34 @@ func (p *Pinger) Run() int {
 			p.stopping = true
 		case <-exitC:
 			p.stopping = true
-		case <-renderC:
-			p.renderDash(time.Now())
+		case <-tickC:
+			p.dirty = true
+		case <-frameC:
+			frameC = nil
+			if !p.paused {
+				p.renderDash(time.Now())
+			}
+		case k := <-p.keys:
+			p.handleKey(k)
 		case sig := <-p.sigs:
-			if sig == syscall.SIGQUIT {
+			switch sig {
+			case syscall.SIGWINCH:
+				if p.dash != nil {
+					p.dash.Clear()
+					p.renderDash(time.Now())
+				}
+			case syscall.SIGQUIT:
 				if p.dash == nil {
 					p.printStatus()
 				}
-			} else {
+			default:
 				p.stopping = true
 			}
 		}
 		checkSendingDone()
+		if p.dash != nil && p.dirty && !p.paused && frameC == nil && !p.stopping {
+			frameC = time.After(time.Until(p.lastFrame.Add(p.frameGap)))
+		}
 	}
 	p.end = time.Now()
 

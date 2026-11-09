@@ -10,19 +10,42 @@ import (
 	"golang.org/x/term"
 )
 
-// Dashboard is a full-screen live view redrawn periodically on the
+// Dashboard is a full-screen live view of the report, drawn on the
 // terminal's alternate screen.
 type Dashboard struct {
 	w  io.Writer
 	st style
 }
 
-// DashStatus is the session state shown in the dashboard header.
+// View selects the dashboard layout.
+type View int
+
+// Dashboard views, cycled with the "v" key.
+const (
+	ViewReport   View = iota // chart and timeline table, like the final report
+	ViewChart                // large RTT chart
+	ViewTimeline             // timeline table only
+	numViews
+)
+
+// Next returns the following view, wrapping around.
+func (v View) Next() View { return (v + 1) % numViews }
+
+func (v View) String() string {
+	return [...]string{"report", "chart", "table"}[v]
+}
+
+// DashStatus is the session state shown in the dashboard header and footer.
 type DashStatus struct {
 	Title   string
 	State   string
 	Elapsed time.Duration
+	LastSeq int
 	Recent  []string // latest per-packet lines, oldest first
+	View    View
+	Paused  bool
+	Keys    bool // keyboard input is available
+	Updated time.Time
 }
 
 // NewDashboard returns a dashboard writing to w.
@@ -32,6 +55,9 @@ func NewDashboard(w io.Writer, color bool) *Dashboard {
 
 // Begin switches to the alternate screen and hides the cursor.
 func (d *Dashboard) Begin() { fmt.Fprint(d.w, "\x1b[?1049h\x1b[?25l\x1b[H\x1b[2J") }
+
+// Clear erases the screen; the next frame repaints everything.
+func (d *Dashboard) Clear() { fmt.Fprint(d.w, "\x1b[H\x1b[2J") }
 
 // End restores the normal screen and the cursor.
 func (d *Dashboard) End() { fmt.Fprint(d.w, "\x1b[?25h\x1b[?1049l") }
@@ -68,56 +94,150 @@ func truncANSI(s string, w int) string {
 	return b.String() + "\x1b[0m"
 }
 
-// Render draws one frame. in.Width is overridden with the terminal width.
+// Render draws one frame sized to the current terminal.
 func (d *Dashboard) Render(in *Input, s DashStatus) {
 	width, height := termSize()
+	d.RenderSize(in, s, width, height)
+}
+
+// RenderSize draws one frame for a width×height terminal.
+func (d *Dashboard) RenderSize(in *Input, s DashStatus, width, height int) {
 	in.Width = width
-	st := d.st
-	head := []string{
-		st.bold("advp ▸ PING "+s.Title) + st.dim(fmt.Sprintf("  %s %s · Ctrl-C stop & report · Ctrl-\\ status", s.State, fmtDur(s.Elapsed))),
-	}
-	head = append(head, summaryLines(in, st)...)
-	if hl := hopTable(in, st); len(hl) > 0 {
-		head = append(head, hl...)
-	}
-
-	recentN := 4
-	if len(s.Recent) < recentN {
-		recentN = len(s.Recent)
-	}
-	tlRows := 5
-	extras := 4 + len(in.Hops) // chart title, axis, time labels, loss, jitter, hops
-	used := len(head) + 1 + extras + 1 + (tlRows + 4) + 1 + recentN
-	chartH := height - used - 1
-	if chartH < 4 {
-		// Not enough room: drop the timeline table first.
-		tlRows = 0
-		chartH = height - (len(head) + 1 + extras + 1 + recentN) - 1
-	}
-	chartH = max(3, min(chartH, 24))
-
-	lines := head
-	lines = append(lines, "")
-	lines = append(lines, chartLines(in, st, chartH)...)
-	if tlRows > 0 {
-		lines = append(lines, "")
-		lines = append(lines, timelineTable(in, st, in.tableBucket(), tlRows)...)
-	}
-	if recentN > 0 {
-		lines = append(lines, "")
-		for _, r := range s.Recent[len(s.Recent)-recentN:] {
-			lines = append(lines, st.dim(r))
+	lines := d.frame(in, s, width, height)
+	var b strings.Builder
+	b.WriteString("\x1b[H")
+	for i, l := range lines {
+		b.WriteString(truncANSI(l, width))
+		b.WriteString("\x1b[K")
+		if i < len(lines)-1 {
+			b.WriteString("\n")
 		}
+	}
+	b.WriteString("\x1b[J")
+	io.WriteString(d.w, b.String())
+}
+
+// frame lays out exactly height lines: header, the report sections that fit,
+// recent events and a footer on the last row.
+func (d *Dashboard) frame(in *Input, s DashStatus, width, height int) []string {
+	st := d.st
+	summary := summaryLines(in, st)
+	hops := hopTable(in, st)
+	recent := s.Recent
+	if len(recent) > 3 {
+		recent = recent[len(recent)-3:]
+	}
+	section := func(l []string) int {
+		if len(l) == 0 {
+			return 0
+		}
+		return len(l) + 1 // trailing blank line
+	}
+
+	body := height - 2 // header and footer
+	chartFixed := 5 + len(in.Hops)
+	minMain := chartFixed + 4
+	if body-section(summary)-section(hops)-section(recent) < minMain {
+		recent = nil
+	}
+	if body-section(summary)-section(hops) < minMain {
+		hops = nil
+	}
+	avail := body - section(summary) - section(hops) - section(recent)
+
+	const tlFixed = 5 // title, borders, header row, separator
+	chartH, tlRows := 0, 0
+	switch s.View {
+	case ViewReport:
+		// The chart has priority; the table gets what is left and any space
+		// it cannot use (few buckets) goes back to the chart.
+		rest := avail - chartFixed - 1
+		chartH = max(6, rest*45/100)
+		tlRows = min(in.timelineRows(), rest-chartH-tlFixed-1)
+		if tlRows < 2 {
+			tlRows, chartH = 0, rest
+		} else {
+			chartH = rest - tlRows - tlFixed - 1
+		}
+		chartH = min(chartH, 30)
+	case ViewChart:
+		chartH = avail - chartFixed - 1
+	case ViewTimeline:
+		tlRows = max(avail-tlFixed-1, 1)
+	}
+
+	lines := []string{d.header(in, s, width)}
+	add := func(l []string) {
+		if len(l) > 0 {
+			lines = append(lines, l...)
+			lines = append(lines, "")
+		}
+	}
+	add(summary)
+	add(hops)
+	if chartH >= 3 {
+		add(chartLines(in, st, chartH))
+	}
+	if tlRows > 0 {
+		b := in.tableBucket()
+		tl := []string{st.bold("Timeline") + st.dim(fmt.Sprintf("  (bucket %s, latest rows, ms)", b))}
+		add(append(tl, timelineTable(in, st, b, tlRows)...))
+	}
+	for _, r := range recent {
+		lines = append(lines, st.dim(r))
 	}
 	if len(lines) > height-1 {
 		lines = lines[:height-1]
 	}
-	var b strings.Builder
-	b.WriteString("\x1b[H")
-	for _, l := range lines {
-		b.WriteString(truncANSI(l, width))
-		b.WriteString("\x1b[K\n")
+	for len(lines) < height-1 {
+		lines = append(lines, "")
 	}
-	b.WriteString("\x1b[J")
-	io.WriteString(d.w, b.String())
+	return append(lines, d.footer(s, width))
+}
+
+func (d *Dashboard) header(in *Input, s DashStatus, width int) string {
+	st := d.st
+	dot := st.green("●")
+	if s.Paused {
+		dot = st.yellow("❚❚")
+	}
+	left := st.bold("advp ▸ PING "+s.Title) + "  " + dot + " " +
+		st.dim(fmt.Sprintf("%s · %s · icmp_seq %d", s.State, fmtDur(s.Elapsed), s.LastSeq))
+	right := ""
+	if !s.Updated.IsZero() {
+		right = st.dim("updated " + s.Updated.Format("15:04:05"))
+	}
+	gap := width - visLen(left) - visLen(right)
+	if gap < 2 {
+		return left
+	}
+	return left + strings.Repeat(" ", gap) + right
+}
+
+// footer is a reverse-video key bar. It uses attribute-specific "off" codes
+// so inner highlights do not end the reverse video early.
+func (d *Dashboard) footer(s DashStatus, width int) string {
+	on := d.st.on
+	bold := func(t string) string {
+		if !on {
+			return t
+		}
+		return "\x1b[1m" + t + "\x1b[22m"
+	}
+	var parts []string
+	if s.Keys {
+		parts = append(parts, bold("q")+" quit", bold("p")+" pause", bold("v")+" view: "+s.View.String(), bold("r")+" redraw")
+	}
+	parts = append(parts, bold("Ctrl-C")+" stop & report")
+	f := " " + strings.Join(parts, "  │  ")
+	if s.Paused {
+		f = " " + bold("PAUSED") + " (stats still collected) ·" + f
+	}
+	if pad := width - visLen(f); pad > 0 {
+		f += strings.Repeat(" ", pad)
+	}
+	if !on {
+		return f
+	}
+	return "\x1b[7m" + f + "\x1b[0m"
 }
