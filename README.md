@@ -55,6 +55,15 @@ the whole session:
 - **Exports**: `--csv` writes every probe; `--html` writes a self-contained
   report with SVG charts that show values on hover.
 
+## Screenshot
+
+![advp live view: summary, traced route with per-hop loss and latency, RTT chart with loss and jitter sparklines, latest timeline rows](screenshot.png)
+
+*`advp --live --hops-max 9.9.9.9` after 1m28s: the summary, the traced route
+compared with the destination (hop addresses redacted), the RTT chart with loss
+and jitter sparklines, the latest timeline rows and the last replies. Press
+`v` to switch view, `q` to quit and print the full report.*
+
 ## Install / build
 
 ```sh
