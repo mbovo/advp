@@ -27,7 +27,7 @@ jobs:
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - name: go vet
         run: GOOS=${{ matrix.goos }} go vet -tags smoke ./...
-      - uses: golangci/golangci-lint-action@v8
+      - uses: golangci/golangci-lint-action@v9
         env:
           GOOS: ${{ matrix.goos }}
         with:
