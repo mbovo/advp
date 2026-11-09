@@ -210,7 +210,11 @@ If stdout is not a terminal, `--live` falls back to normal line output.
 
 You need Go (see `go.mod`) and [just](https://github.com/casey/just).
 Run `just tools` once to install the pinned golangci-lint, govulncheck,
-GoReleaser and actionlint. Then:
+GoReleaser and actionlint. The lint and format recipes always use the pinned
+golangci-lint v2 (the same version as CI), through `scripts/golangci-lint.sh`.
+If the `golangci-lint` on your PATH is a different version, for example v1,
+the pinned one is installed once into `~/.cache/advp/` and used instead.
+Set `GOLANGCI_LINT=/path/to/binary` to force a specific binary. Then:
 
 | Recipe | What it does |
 |---|---|

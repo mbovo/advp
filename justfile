@@ -18,7 +18,8 @@ golangci_version := "v2.14.0"
 govulncheck_version := "v1.8.0"
 goreleaser_version := "v2.18.2"
 actionlint_version := "v1.7.12"
-golangci := env("GOLANGCI_LINT", "golangci-lint")
+# Always the pinned version (CI uses the same); override with GOLANGCI_LINT=/path.
+golangci := "GOLANGCI_LINT_VERSION=" + golangci_version + " scripts/golangci-lint.sh"
 goreleaser := env("GORELEASER", "goreleaser")
 actionlint := env("ACTIONLINT", "actionlint")
 

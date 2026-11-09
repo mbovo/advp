@@ -39,8 +39,20 @@ Tool binaries can be overridden with `GOLANGCI_LINT`, `GORELEASER` and
 linted too; vet them with `go vet -tags smoke`.
 
 The lint config is golangci-lint **v2** format (`.golangci.yml`). golangci-lint
-v1.x cannot load Go 1.27 export data and reports bogus `typecheck` errors. Point
-the recipes at another binary with `GOLANGCI_LINT=/path/to/golangci-lint`.
+v1.x refuses it, and cannot load Go 1.27 export data anyway.
+
+The recipes never call `golangci-lint` from PATH directly; they go through
+`scripts/golangci-lint.sh` with `GOLANGCI_LINT_VERSION` set from the
+justfile. Lookup order:
+
+1. `$GOLANGCI_LINT`;
+2. PATH, only if it is exactly the pinned version;
+3. a copy installed once into `${XDG_CACHE_HOME:-~/.cache}/advp/`.
+
+The copy is installed with GOOS/GOARCH unset, so it is built for the host even
+inside the per-GOOS lint loop. When bumping the version, change
+`golangci_version` in the justfile **and** `version:` in
+`.github/workflows/test.yml`.
 
 ## Architecture
 
