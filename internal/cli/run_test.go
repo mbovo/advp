@@ -255,6 +255,14 @@ func TestRunExports(t *testing.T) {
 			t.Errorf("%s not written: %v", p, err)
 		}
 	}
+	// -q writes the files but does not print the confirmations.
+	quiet := filepath.Join(dir, "quiet.csv")
+	if code, out, _ := run(t, "-c", "1", "-q", "--no-hops", "--csv", quiet, "192.0.2.1"); code != 0 || strings.Contains(out, "written to") {
+		t.Fatalf("quiet export: exit %d\n%s", code, out)
+	}
+	if st, err := os.Stat(quiet); err != nil || st.Size() == 0 {
+		t.Fatalf("quiet export not written: %v", err)
+	}
 	if code, _, errOut := run(t, "-c", "1", "--no-hops", "--csv", filepath.Join(dir, "missing", "x.csv"), "192.0.2.1"); code != 0 ||
 		!strings.Contains(errOut, "advp: csv:") {
 		t.Fatalf("csv write error not reported: %d %s", code, errOut)

@@ -293,8 +293,19 @@ func TestExports(t *testing.T) {
 	needICMP(t, false)
 	dir := t.TempDir()
 	csvPath, htmlPath := filepath.Join(dir, "probes.csv"), filepath.Join(dir, "report.html")
-	r := advp(t, "-c", "3", "-i", "0.2", "-n", "-q", "--hops", "1", "--csv", csvPath, "--html", htmlPath, "127.0.0.1")
-	expect(t, r, 0, "CSV written to", "HTML report written to")
+	r := advp(t, "-c", "3", "-i", "0.2", "-n", "--hops", "1", "--csv", csvPath, "--html", htmlPath, "127.0.0.1")
+	expect(t, r, 0, "CSV written to "+csvPath, "HTML report written to "+htmlPath)
+
+	// -q still writes the files but suppresses the confirmations.
+	quietCSV := filepath.Join(dir, "quiet.csv")
+	q := advp(t, "-c", "1", "-n", "-q", "--no-hops", "--csv", quietCSV, "127.0.0.1")
+	expect(t, q, 0)
+	if strings.Contains(q.stdout, "written to") {
+		t.Errorf("-q printed export confirmations\n%s", q)
+	}
+	if st, err := os.Stat(quietCSV); err != nil || st.Size() == 0 {
+		t.Errorf("-q did not write the CSV: %v", err)
+	}
 
 	f, err := os.Open(csvPath)
 	if err != nil {
