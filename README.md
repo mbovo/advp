@@ -22,17 +22,14 @@
 >   model training and hardware manufacturing; real values vary widely by model
 >   and datacenter):
 >
->   | Resource | Estimate for this session | Assumption |
->   |----------|---------------------------|------------|
->   | Energy   | ~0.3 – 1.8 kWh            | ~1–4 J per output token / ~0.02–0.1 J per input token |
->   | CO₂      | ~0.1 – 0.7 kg CO₂e        | ~400 g CO₂e/kWh average grid mix |
->   | Water    | ~0.5 – 3 L                | ~1.8 L/kWh datacenter cooling + power generation |
+>   | Resource | Estimate for this session |
+>   |----------|---------------------------|
+>   | Energy   | ~ 1.8 kWh            |
+>   | CO₂      | ~ 0.7 kg CO₂e        |
+>   | Water    | ~ 3 L                |
 >
 >   That is roughly 3 – 18 electric-kettle boils, or one to two dishwasher
->   cycles. The last ~75 requests (agent notes, test suites, CI and release
->   automation) roughly doubled the earlier estimate: most of the cost comes
->   from re-reading an ever longer context, not from the code that ends up in
->   the repo.
+>   cycles.
 
 `advp` is a drop-in replacement for iputils `ping` written in Go. It
 supports most of the GNU/Linux `ping` command line and prints the same
