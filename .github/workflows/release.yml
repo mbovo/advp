@@ -57,7 +57,7 @@ jobs:
           git tag -a "$next" -m "advp $next"
           git push origin "$next"
           echo "tag=$next" >> "$GITHUB_OUTPUT"
-      - uses: goreleaser/goreleaser-action@v6
+      - uses: goreleaser/goreleaser-action@v7
         if: steps.tag.outputs.tag != ''
         with:
           version: "~> v2"
