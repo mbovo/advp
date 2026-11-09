@@ -1,94 +1,22 @@
-package main
+package cli
 
 import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"math"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mbovo/advp/internal/ping"
 )
-
-const version = "1.0.0"
-
-// Options mirrors the iputils ping command line plus the advp extensions.
-type Options struct {
-	Host string
-
-	Count       int           // -c, 0 = unlimited
-	Interval    time.Duration // -i
-	IntervalSet bool
-	Linger      time.Duration // -W
-	LingerSet   bool
-	Deadline    time.Duration // -w, 0 = none
-	Size        int           // -s
-	TTL         int           // -t, -1 = system default
-	Preload     int           // -l
-	Interface   string        // -I
-	Mark        int           // -m
-	MarkSet     bool
-	PMTU        string // -M do|dont|want|probe
-	Pattern     []byte // -p
-	TOS         int    // -Q, -1 = unset
-	SndBuf      int    // -S
-	Ident       int    // -e, -1 = auto
-	Family      int    // 0, 4 or 6
-
-	Precise     bool // -3
-	Audible     bool // -a
-	Adaptive    bool // -A
-	Broadcast   bool // -b
-	StickySrc   bool // -B
-	Connect     bool // -C
-	Debug       bool // -d
-	Timestamps  bool // -D
-	Flood       bool // -f
-	ForceRDNS   bool // -H
-	NoMcastLoop bool // -L
-	Numeric     bool // -n
-	Outstanding bool // -O
-	Quiet       bool // -q
-	DontRoute   bool // -r
-	RecordRoute bool // -R
-	UserLatency bool // -U
-	Verbose     bool // -v
-
-	// advp extensions
-	Hops        int
-	HopInterval time.Duration
-	Bucket      time.Duration
-	ChartHeight int
-	TUI         bool
-	NoReport    bool
-	Color       string // auto, always, never
-	CSV         string
-	HTML        string
-
-	Warnings []string
-}
 
 // errHelp / errVersion are returned when -h / -V are requested.
 var (
 	errHelp    = errors.New("help requested")
 	errVersion = errors.New("version requested")
 )
-
-func defaultOptions() *Options {
-	return &Options{
-		Interval:    time.Second,
-		Linger:      10 * time.Second,
-		Size:        56,
-		TTL:         -1,
-		Preload:     1,
-		TOS:         -1,
-		Ident:       -1,
-		Hops:        2,
-		ChartHeight: 10,
-		Color:       "auto",
-	}
-}
 
 // Short options that take an argument, iputils style.
 const shortWithArg = "cIilmMpQsStTwWeFN"
@@ -106,8 +34,8 @@ var longFlags = map[string]bool{
 // parseArgs parses argv (without the program name) the same way getopt does
 // for iputils ping: bundled short flags (-qn), attached values (-c5), options
 // after the destination, and "--" to stop option parsing.
-func parseArgs(args []string) (*Options, error) {
-	o := defaultOptions()
+func parseArgs(args []string) (*ping.Options, error) {
+	o := ping.DefaultOptions()
 	var positional []string
 
 	for i := 0; i < len(args); i++ {
@@ -123,7 +51,7 @@ func parseArgs(args []string) (*Options, error) {
 				if hasVal {
 					return nil, fmt.Errorf("option '--%s' doesn't allow an argument", name)
 				}
-				if err := o.applyLong(name, ""); err != nil {
+				if err := applyLong(o, name, ""); err != nil {
 					return nil, err
 				}
 			case longWithArg[name]:
@@ -134,7 +62,7 @@ func parseArgs(args []string) (*Options, error) {
 					i++
 					val = args[i]
 				}
-				if err := o.applyLong(name, val); err != nil {
+				if err := applyLong(o, name, val); err != nil {
 					return nil, err
 				}
 			default:
@@ -158,12 +86,12 @@ func parseArgs(args []string) (*Options, error) {
 					i++
 					val = args[i]
 				}
-				if err := o.applyShort(c, val); err != nil {
+				if err := applyShort(o, c, val); err != nil {
 					return nil, err
 				}
 				j = len(a)
 			case strings.IndexByte(shortFlags, c) >= 0:
-				if err := o.applyShort(c, ""); err != nil {
+				if err := applyShort(o, c, ""); err != nil {
 					return nil, err
 				}
 			default:
@@ -191,7 +119,7 @@ func parseArgs(args []string) (*Options, error) {
 	return o, nil
 }
 
-func (o *Options) applyShort(c byte, val string) error {
+func applyShort(o *ping.Options, c byte, val string) error {
 	var err error
 	switch c {
 	case '3':
@@ -299,7 +227,7 @@ func (o *Options) applyShort(c byte, val string) error {
 	return err
 }
 
-func (o *Options) applyLong(name, val string) error {
+func applyLong(o *ping.Options, name, val string) error {
 	var err error
 	switch name {
 	case "help":
@@ -390,71 +318,4 @@ func parseTOS(s string) (int, error) {
 		return 0, fmt.Errorf("the decimal value of TOS bits must be in range 0-255: %s", s)
 	}
 	return int(v), nil
-}
-
-func printUsage(w io.Writer) {
-	fmt.Fprint(w, `
-Usage
-  advp [options] <destination>
-
-Options:
-  <destination>      DNS name or IP address
-  -3                 RTT precision (do not round up the result time)
-  -a                 use audible ping
-  -A                 use adaptive ping
-  -B                 sticky source address
-  -c <count>         stop after <count> replies
-  -C                 call connect() syscall on socket creation
-  -D                 print timestamps
-  -d                 use SO_DEBUG socket option
-  -e <identifier>    define identifier for ping session, default is random for
-                     SOCK_RAW and kernel defined for SOCK_DGRAM
-  -f                 flood ping
-  -h                 print help and exit
-  -H                 force reverse DNS name resolution (useful for numeric
-                     destinations or for -f), override -n
-  -I <interface>     either interface name or address
-  -i <interval>      seconds between sending each packet
-  -L                 suppress loopback of multicast packets
-  -l <preload>       send <preload> number of packages while waiting replies
-  -m <mark>          tag the packets going out (Linux)
-  -M <pmtud opt>     define path MTU discovery, can be one of <do|dont|want|probe>
-  -n                 no reverse DNS name resolution, override -H
-  -O                 report outstanding replies
-  -p <pattern>       contents of padding byte
-  -q                 quiet output
-  -Q <tclass>        use quality of service <tclass> bits
-  -s <size>          use <size> as number of data bytes to be sent
-  -S <size>          use <size> as SO_SNDBUF socket option value
-  -t <ttl>           define time to live
-  -U                 print user-to-user latency
-  -v                 verbose output
-  -V                 print version and exit
-  -w <deadline>      reply wait <deadline> in seconds
-  -W <timeout>       time to wait for response
-
-IPv4 options:
-  -4                 use IPv4
-  -b                 allow pinging broadcast
-  -R                 record route (raw socket only)
-  -T <timestamp>     (accepted, not supported)
-
-IPv6 options:
-  -6                 use IPv6
-  -F <flowlabel>     (accepted, not supported)
-  -N <nodeinfo opt>  (accepted, not supported)
-
-advp extensions:
-  --tui, --dashboard     live full-screen dashboard instead of per-packet lines
-  --hops <n>             number of first hops to monitor (default 2, 0 disables)
-  --no-hops              do not probe the first hops
-  --hop-interval <dur>   interval between hop probes (default max(1s, -i))
-  --bucket <dur>         time-bucket width for the timeline table (default auto)
-  --chart-height <n>     height of the RTT chart in rows (default 10)
-  --csv <file>           write every probe (target and hops) to a CSV file
-  --html <file>          write a self-contained HTML report with SVG charts
-  --no-report            print only the classic ping summary
-  --color <when>         auto|always|never (default auto, honours NO_COLOR)
-  --no-color             same as --color never
-`)
 }

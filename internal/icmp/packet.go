@@ -1,4 +1,4 @@
-package main
+package icmp
 
 import (
 	"encoding/binary"
@@ -7,12 +7,14 @@ import (
 	"time"
 )
 
+// EventKind classifies a received message.
 type EventKind int
 
+// Event kinds.
 const (
-	EvReply EventKind = iota // echo reply
-	EvError                  // ICMP error (or local error) about one of our probes
-	EvOther                  // unrelated ICMP message
+	KindReply EventKind = iota // echo reply
+	KindError                  // ICMP error (or local error) about one of our probes
+	KindOther                  // unrelated ICMP message
 )
 
 // Event is a decoded packet (or error-queue entry) received on a socket.
@@ -32,21 +34,22 @@ type Event struct {
 	Route   []net.IP
 }
 
+// ICMP (V4*) and ICMPv6 (V6*) message types.
 const (
-	icmp4EchoReply    = 0
-	icmp4Unreach      = 3
-	icmp4SourceQuench = 4
-	icmp4Redirect     = 5
-	icmp4Echo         = 8
-	icmp4TimeExceeded = 11
-	icmp4ParamProb    = 12
+	V4EchoReply    = 0
+	V4Unreach      = 3
+	V4SourceQuench = 4
+	V4Redirect     = 5
+	V4Echo         = 8
+	V4TimeExceeded = 11
+	V4ParamProb    = 12
 
-	icmp6Unreach      = 1
-	icmp6TooBig       = 2
-	icmp6TimeExceeded = 3
-	icmp6ParamProb    = 4
-	icmp6Echo         = 128
-	icmp6EchoReply    = 129
+	V6Unreach      = 1
+	V6TooBig       = 2
+	V6TimeExceeded = 3
+	V6ParamProb    = 4
+	V6Echo         = 128
+	V6EchoReply    = 129
 )
 
 func checksum(b []byte) uint16 {
@@ -63,13 +66,13 @@ func checksum(b []byte) uint16 {
 	return ^uint16(s)
 }
 
-// buildEcho returns a complete ICMP/ICMPv6 echo request. For ICMPv6 the
+// BuildEcho returns a complete ICMP/ICMPv6 echo request. For ICMPv6 the
 // kernel fills in the checksum (it needs the pseudo header).
-func buildEcho(v6 bool, id, seq uint16, payload []byte) []byte {
+func BuildEcho(v6 bool, id, seq uint16, payload []byte) []byte {
 	b := make([]byte, 8+len(payload))
-	b[0] = icmp4Echo
+	b[0] = V4Echo
 	if v6 {
-		b[0] = icmp6Echo
+		b[0] = V6Echo
 	}
 	binary.BigEndian.PutUint16(b[4:], id)
 	binary.BigEndian.PutUint16(b[6:], seq)
@@ -80,9 +83,9 @@ func buildEcho(v6 bool, id, seq uint16, payload []byte) []byte {
 	return b
 }
 
-// buildPayload mimics iputils: a timestamp first (when it fits), then either
+// BuildPayload mimics iputils: a timestamp first (when it fits), then either
 // the -p pattern or incrementing bytes.
-func buildPayload(size int, pattern []byte, now time.Time) []byte {
+func BuildPayload(size int, pattern []byte, now time.Time) []byte {
 	p := make([]byte, size)
 	off := 0
 	if size >= 8 {
@@ -163,13 +166,13 @@ func parseICMP(v6 bool, b []byte) (Event, bool) {
 		return ev, false
 	}
 	ev.Type, ev.Code, ev.Size = int(b[0]), int(b[1]), len(b)
-	echoReply, echoReq := icmp4EchoReply, icmp4Echo
+	echoReply, echoReq := V4EchoReply, V4Echo
 	if v6 {
-		echoReply, echoReq = icmp6EchoReply, icmp6Echo
+		echoReply, echoReq = V6EchoReply, V6Echo
 	}
 	switch {
 	case ev.Type == echoReply:
-		ev.Kind = EvReply
+		ev.Kind = KindReply
 		ev.ID = binary.BigEndian.Uint16(b[4:])
 		ev.Seq = binary.BigEndian.Uint16(b[6:])
 		ev.Payload = append([]byte(nil), b[8:]...)
@@ -179,23 +182,23 @@ func parseICMP(v6 bool, b []byte) (Event, bool) {
 	case isICMPError(v6, ev.Type):
 		id, seq, ok := innerEcho(v6, b[8:])
 		if !ok {
-			ev.Kind = EvOther
+			ev.Kind = KindOther
 			return ev, true
 		}
-		ev.Kind, ev.ID, ev.Seq = EvError, id, seq
+		ev.Kind, ev.ID, ev.Seq = KindError, id, seq
 		switch {
-		case !v6 && ev.Type == icmp4Unreach && ev.Code == 4:
+		case !v6 && ev.Type == V4Unreach && ev.Code == 4:
 			ev.Info = uint32(binary.BigEndian.Uint16(b[6:]))
-		case !v6 && (ev.Type == icmp4Redirect):
+		case !v6 && (ev.Type == V4Redirect):
 			ev.Info = binary.BigEndian.Uint32(b[4:])
-		case !v6 && ev.Type == icmp4ParamProb:
+		case !v6 && ev.Type == V4ParamProb:
 			ev.Info = uint32(b[4])
-		case v6 && (ev.Type == icmp6TooBig || ev.Type == icmp6ParamProb):
+		case v6 && (ev.Type == V6TooBig || ev.Type == V6ParamProb):
 			ev.Info = binary.BigEndian.Uint32(b[4:])
 		}
 		return ev, true
 	default:
-		ev.Kind = EvOther
+		ev.Kind = KindOther
 		return ev, true
 	}
 }
@@ -205,7 +208,7 @@ func isICMPError(v6 bool, t int) bool {
 		return t >= 1 && t <= 4
 	}
 	switch t {
-	case icmp4Unreach, icmp4SourceQuench, icmp4Redirect, icmp4TimeExceeded, icmp4ParamProb:
+	case V4Unreach, V4SourceQuench, V4Redirect, V4TimeExceeded, V4ParamProb:
 		return true
 	}
 	return false
@@ -214,7 +217,7 @@ func isICMPError(v6 bool, t int) bool {
 // innerEcho extracts id/seq from the original datagram quoted in an ICMP error.
 func innerEcho(v6 bool, b []byte) (id, seq uint16, ok bool) {
 	if v6 {
-		if len(b) < 48 || b[0]>>4 != 6 || b[6] != 58 || b[40] != icmp6Echo {
+		if len(b) < 48 || b[0]>>4 != 6 || b[6] != 58 || b[40] != V6Echo {
 			return 0, 0, false
 		}
 		return binary.BigEndian.Uint16(b[44:]), binary.BigEndian.Uint16(b[46:]), true
@@ -223,28 +226,28 @@ func innerEcho(v6 bool, b []byte) (id, seq uint16, ok bool) {
 		return 0, 0, false
 	}
 	ihl := int(b[0]&0x0f) * 4
-	if ihl < 20 || len(b) < ihl+8 || b[ihl] != icmp4Echo {
+	if ihl < 20 || len(b) < ihl+8 || b[ihl] != V4Echo {
 		return 0, 0, false
 	}
 	return binary.BigEndian.Uint16(b[ihl+4:]), binary.BigEndian.Uint16(b[ihl+6:]), true
 }
 
-// isTimeExceeded reports whether the event is a TTL/hop-limit expiry.
-func (e *Event) isTimeExceeded(v6 bool) bool {
-	if e.Kind != EvError || e.Local {
+// IsTimeExceeded reports whether the event is a TTL/hop-limit expiry.
+func (e *Event) IsTimeExceeded(v6 bool) bool {
+	if e.Kind != KindError || e.Local {
 		return false
 	}
 	if v6 {
-		return e.Type == icmp6TimeExceeded
+		return e.Type == V6TimeExceeded
 	}
-	return e.Type == icmp4TimeExceeded
+	return e.Type == V4TimeExceeded
 }
 
-// icmpErrorText returns the iputils wording for an ICMP error.
-func icmpErrorText(v6 bool, typ, code int, info uint32) string {
+// ErrorText returns the iputils wording for an ICMP error.
+func ErrorText(v6 bool, typ, code int, info uint32) string {
 	if v6 {
 		switch typ {
-		case icmp6Unreach:
+		case V6Unreach:
 			msgs := []string{"No route", "Administratively prohibited", "Beyond scope of source address",
 				"Address unreachable", "Port unreachable", "Source address failed ingress/egress policy",
 				"Reject route to destination"}
@@ -252,9 +255,9 @@ func icmpErrorText(v6 bool, typ, code int, info uint32) string {
 				return "Destination unreachable: " + msgs[code]
 			}
 			return fmt.Sprintf("Destination unreachable: Unknown code %d", code)
-		case icmp6TooBig:
+		case V6TooBig:
 			return fmt.Sprintf("Packet too big: mtu=%d", info)
-		case icmp6TimeExceeded:
+		case V6TimeExceeded:
 			switch code {
 			case 0:
 				return "Time exceeded: Hop limit"
@@ -262,7 +265,7 @@ func icmpErrorText(v6 bool, typ, code int, info uint32) string {
 				return "Time exceeded: Defragmentation failure"
 			}
 			return fmt.Sprintf("Time exceeded: code %d", code)
-		case icmp6ParamProb:
+		case V6ParamProb:
 			msgs := []string{"Erroneous header field", "Unknown header", "Unknown option"}
 			if code < len(msgs) {
 				return fmt.Sprintf("Parameter problem: %s at %d", msgs[code], info)
@@ -272,7 +275,7 @@ func icmpErrorText(v6 bool, typ, code int, info uint32) string {
 		return fmt.Sprintf("Unknown icmp type: %d", typ)
 	}
 	switch typ {
-	case icmp4Unreach:
+	case V4Unreach:
 		msgs := []string{"Destination Net Unreachable", "Destination Host Unreachable",
 			"Destination Protocol Unreachable", "Destination Port Unreachable", "",
 			"Source Route Failed", "Destination Net Unknown", "Destination Host Unknown",
@@ -286,9 +289,9 @@ func icmpErrorText(v6 bool, typ, code int, info uint32) string {
 			return msgs[code]
 		}
 		return fmt.Sprintf("Dest Unreachable, Bad Code: %d", code)
-	case icmp4SourceQuench:
+	case V4SourceQuench:
 		return "Source Quench"
-	case icmp4Redirect:
+	case V4Redirect:
 		var gw [4]byte
 		binary.BigEndian.PutUint32(gw[:], info)
 		msgs := []string{"Redirect Network", "Redirect Host", "Redirect Type of Service and Network", "Redirect Type of Service and Host"}
@@ -297,7 +300,7 @@ func icmpErrorText(v6 bool, typ, code int, info uint32) string {
 			m = msgs[code]
 		}
 		return fmt.Sprintf("%s(New nexthop: %s)", m, net.IP(gw[:]))
-	case icmp4TimeExceeded:
+	case V4TimeExceeded:
 		switch code {
 		case 0:
 			return "Time to live exceeded"
@@ -305,7 +308,7 @@ func icmpErrorText(v6 bool, typ, code int, info uint32) string {
 			return "Frag reassembly time exceeded"
 		}
 		return fmt.Sprintf("Time exceeded, Bad Code: %d", code)
-	case icmp4ParamProb:
+	case V4ParamProb:
 		return fmt.Sprintf("Parameter problem: pointer = %d", info)
 	}
 	return fmt.Sprintf("Bad ICMP type: %d", typ)

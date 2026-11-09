@@ -1,4 +1,6 @@
-package main
+// Package stats aggregates ping samples: loss, percentiles, jitter and
+// fixed-width time buckets.
+package stats
 
 import (
 	"math"
@@ -26,14 +28,17 @@ type Series struct {
 	index   map[uint16]int
 }
 
-func newSeries() *Series { return &Series{index: map[uint16]int{}} }
+// NewSeries returns an empty series.
+func NewSeries() *Series { return &Series{index: map[uint16]int{}} }
 
+// Add records a probe sent at sent and returns it for later updates.
 func (s *Series) Add(seq int, sent time.Time) *Sample {
 	s.Samples = append(s.Samples, Sample{Seq: seq, Sent: sent, TTL: -1})
 	s.index[uint16(seq)] = len(s.Samples) - 1
 	return &s.Samples[len(s.Samples)-1]
 }
 
+// Lookup returns the latest sample sent with the wire sequence seq, or nil.
 func (s *Series) Lookup(seq uint16) *Sample {
 	i, ok := s.index[seq]
 	if !ok {
@@ -42,6 +47,7 @@ func (s *Series) Lookup(seq uint16) *Sample {
 	return &s.Samples[i]
 }
 
+// Last returns the most recent sample, or nil.
 func (s *Series) Last() *Sample {
 	if len(s.Samples) == 0 {
 		return nil
@@ -83,10 +89,10 @@ func (a Agg) LossPct() float64 {
 	return float64(a.Lost) * 100 / float64(done)
 }
 
-// aggregate computes statistics; probes younger than lostAfter without an
+// Aggregate computes statistics; probes younger than lostAfter without an
 // answer are counted as pending rather than lost. Use lostAfter=0 for a
 // final report.
-func aggregate(samples []Sample, now time.Time, lostAfter time.Duration) Agg {
+func Aggregate(samples []Sample, now time.Time, lostAfter time.Duration) Agg {
 	return aggregateFrom(samples, -1, now, lostAfter)
 }
 
@@ -170,9 +176,9 @@ func percentile(sorted []float64, p float64) float64 {
 	return sorted[lo] + (sorted[hi]-sorted[lo])*f
 }
 
-// bucketize splits samples (ordered by send time) into fixed width buckets
+// Bucketize splits samples (ordered by send time) into fixed width buckets
 // starting at start, covering [start, end).
-func bucketize(samples []Sample, start, end time.Time, width time.Duration, now time.Time, lostAfter time.Duration) []Agg {
+func Bucketize(samples []Sample, start, end time.Time, width time.Duration, now time.Time, lostAfter time.Duration) []Agg {
 	if width <= 0 || !end.After(start) {
 		return nil
 	}
@@ -208,9 +214,9 @@ var niceSteps = []time.Duration{
 	time.Hour, 2 * time.Hour, 3 * time.Hour, 6 * time.Hour, 12 * time.Hour, 24 * time.Hour,
 }
 
-// niceBucket picks a round bucket width so that span fits in at most n buckets,
+// NiceBucket picks a round bucket width so that span fits in at most n buckets,
 // never smaller than minWidth.
-func niceBucket(span time.Duration, n int, minWidth time.Duration) time.Duration {
+func NiceBucket(span time.Duration, n int, minWidth time.Duration) time.Duration {
 	if n < 1 {
 		n = 1
 	}
@@ -233,9 +239,13 @@ func niceBucket(span time.Duration, n int, minWidth time.Duration) time.Duration
 	return d
 }
 
-func fmtJitter(a Agg) string {
-	if !a.HasJitter {
-		return "-"
+// GuessHops estimates the hop distance from a received TTL, assuming the
+// sender used one of the common initial TTL values.
+func GuessHops(ttl int) (initial, hops int) {
+	for _, i := range []int{32, 64, 128, 255} {
+		if ttl <= i {
+			return i, i - ttl
+		}
 	}
-	return fmtMs(a.Jitter)
+	return 0, 0
 }

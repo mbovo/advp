@@ -1,4 +1,4 @@
-package main
+package ping
 
 import (
 	"bytes"
@@ -11,14 +11,16 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/mbovo/advp/internal/icmp"
 )
 
 // fakeConn simulates the network: each sent echo produces (or not) an event
 // after a simulated delay.
 type fakeConn struct {
 	id    uint16
-	ch    chan Event
-	reply func(seq uint16) (Event, time.Duration, bool)
+	ch    chan icmp.Event
+	reply func(seq uint16) (icmp.Event, time.Duration, bool)
 	mu    sync.Mutex
 	sent  int
 }
@@ -39,12 +41,12 @@ func (f *fakeConn) Send(pkt []byte) (time.Time, error) {
 	return now, nil
 }
 
-func (f *fakeConn) Read(timeout time.Duration) (Event, bool, error) {
+func (f *fakeConn) Read(timeout time.Duration) (icmp.Event, bool, error) {
 	select {
 	case ev := <-f.ch:
 		return ev, true, nil
 	case <-time.After(timeout):
-		return Event{}, false, nil
+		return icmp.Event{}, false, nil
 	}
 }
 func (f *fakeConn) ID() uint16     { return f.id }
@@ -52,51 +54,52 @@ func (f *fakeConn) FilterID() bool { return true }
 func (f *fakeConn) Raw() bool      { return false }
 func (f *fakeConn) Close() error   { return nil }
 
-func newFake(id uint16, reply func(seq uint16) (Event, time.Duration, bool)) *fakeConn {
-	return &fakeConn{id: id, ch: make(chan Event, 1024), reply: reply}
+func newFake(id uint16, reply func(seq uint16) (icmp.Event, time.Duration, bool)) *fakeConn {
+	return &fakeConn{id: id, ch: make(chan icmp.Event, 1024), reply: reply}
 }
 
-func testPinger(t *testing.T, args []string, mainReply func(uint16) (Event, time.Duration, bool), hops int) (*Pinger, *bytes.Buffer, *bytes.Buffer) {
+func testPinger(t *testing.T, setOpts func(o *Options), mainReply func(uint16) (icmp.Event, time.Duration, bool), hops int) (*Pinger, *bytes.Buffer, *bytes.Buffer) {
 	t.Helper()
-	opt, err := parseArgs(args)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dst := net.IPv4(192, 0, 2, 10).To4()
-	var hs []*hopState
+	opt := DefaultOptions()
+	opt.Host, opt.Numeric = "h", true
+	setOpts(opt)
+	var hcs []icmp.Conn
 	for ttl := 1; ttl <= hops; ttl++ {
-		ttl := ttl
-		hs = append(hs, &hopState{ttl: ttl, series: newSeries(), conn: newFake(uint16(100+ttl), func(seq uint16) (Event, time.Duration, bool) {
+		hcs = append(hcs, newFake(uint16(100+ttl), func(seq uint16) (icmp.Event, time.Duration, bool) {
 			from := net.IPv4(10, 0, 0, byte(ttl)).To4()
 			if ttl == 2 && seq > 2 {
 				from = net.IPv4(10, 0, 1, 2).To4() // route change on hop 2
 			}
 			if ttl == 2 && seq%4 == 0 {
-				return Event{}, 0, false // rate-limited hop
+				return icmp.Event{}, 0, false // rate-limited hop
 			}
-			return Event{Kind: EvError, Type: icmp4TimeExceeded, From: from, Size: 36}, time.Duration(ttl) * time.Millisecond, true
-		})})
+			return icmp.Event{Kind: icmp.KindError, Type: icmp.V4TimeExceeded, From: from, Size: 36}, time.Duration(ttl) * time.Millisecond, true
+		}))
 	}
 	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
-	p := &Pinger{
-		opt: opt, out: out, errOut: errOut, host: "test.example", dst: dst, isName: true,
-		conn: newFake(42, mainReply), hops: hs, names: nil, sigs: make(chan os.Signal), sockKind: "fake",
-	}
-	opt.Numeric = true
+	p := New(Config{
+		Options: opt, Host: "test.example", Dst: net.IPv4(192, 0, 2, 10).To4(), IsName: true,
+		Conn: newFake(42, mainReply), HopConns: hcs, Stdout: out, Stderr: errOut,
+		Signals: make(chan os.Signal), SockKind: "fake",
+	})
 	return p, out, errOut
 }
 
+func ms(n float64) time.Duration { return time.Duration(n * float64(time.Millisecond)) }
+
 func TestPingerEndToEnd(t *testing.T) {
-	reply := func(seq uint16) (Event, time.Duration, bool) {
+	reply := func(seq uint16) (icmp.Event, time.Duration, bool) {
 		if seq == 3 || seq == 7 {
-			return Event{}, 0, false // lost
+			return icmp.Event{}, 0, false // lost
 		}
-		ev := Event{Kind: EvReply, From: net.IPv4(192, 0, 2, 10).To4(), Size: 64, TTL: 57}
+		ev := icmp.Event{Kind: icmp.KindReply, From: net.IPv4(192, 0, 2, 10).To4(), Size: 64, TTL: 57}
 		return ev, time.Duration(2+seq%5) * time.Millisecond, true
 	}
 	dir := t.TempDir()
-	p, out, _ := testPinger(t, []string{"-c", "20", "-i", "0.02", "-W", "0.2", "--hop-interval", "0.1",
-		"--csv", filepath.Join(dir, "x.csv"), "--html", filepath.Join(dir, "x.html"), "--color", "never", "h"}, reply, 2)
+	p, out, _ := testPinger(t, func(o *Options) {
+		o.Count, o.Interval, o.IntervalSet, o.Linger, o.LingerSet, o.HopInterval = 20, ms(20), true, ms(200), true, ms(100)
+		o.CSV, o.HTML, o.Color = filepath.Join(dir, "x.csv"), filepath.Join(dir, "x.html"), "never"
+	}, reply, 2)
 	code := p.Run()
 	s := out.String()
 	if code != 0 {
@@ -133,17 +136,17 @@ func TestPingerEndToEnd(t *testing.T) {
 }
 
 func TestPingerDupsErrorsAndExitCodes(t *testing.T) {
-	reply := func(seq uint16) (Event, time.Duration, bool) {
+	reply := func(seq uint16) (icmp.Event, time.Duration, bool) {
 		if seq == 2 {
-			return Event{Kind: EvError, Type: icmp4Unreach, Code: 1, From: net.IPv4(10, 0, 0, 1).To4()}, time.Millisecond, true
+			return icmp.Event{Kind: icmp.KindError, Type: icmp.V4Unreach, Code: 1, From: net.IPv4(10, 0, 0, 1).To4()}, time.Millisecond, true
 		}
-		return Event{Kind: EvReply, From: net.IPv4(192, 0, 2, 10).To4(), Size: 64}, time.Millisecond, true
+		return icmp.Event{Kind: icmp.KindReply, From: net.IPv4(192, 0, 2, 10).To4(), Size: 64}, time.Millisecond, true
 	}
-	p, out, _ := testPinger(t, []string{"-c", "4", "-i", "0.01", "--no-report", "h"}, reply, 0)
+	p, out, _ := testPinger(t, func(o *Options) { o.Count, o.Interval, o.IntervalSet, o.NoReport = 4, ms(10), true, true }, reply, 0)
 	// Inject a duplicate for seq 1.
 	fc := p.conn.(*fakeConn)
 	orig := fc.reply
-	fc.reply = func(seq uint16) (Event, time.Duration, bool) {
+	fc.reply = func(seq uint16) (icmp.Event, time.Duration, bool) {
 		if seq == 1 {
 			ev, d, ok := orig(seq)
 			ev.ID, ev.Seq, ev.At, ev.TTL = fc.id, seq, time.Now().Add(2*d), -1
@@ -166,7 +169,9 @@ func TestPingerDupsErrorsAndExitCodes(t *testing.T) {
 	}
 
 	// No reply at all → exit code 1, and linger (-W) bounds the wait.
-	p, out, _ = testPinger(t, []string{"-c", "2", "-i", "0.01", "-W", "0.1", "-q", "h"}, func(uint16) (Event, time.Duration, bool) { return Event{}, 0, false }, 0)
+	p, out, _ = testPinger(t, func(o *Options) {
+		o.Count, o.Interval, o.IntervalSet, o.Linger, o.LingerSet, o.Quiet = 2, ms(10), true, ms(100), true, true
+	}, func(uint16) (icmp.Event, time.Duration, bool) { return icmp.Event{}, 0, false }, 0)
 	start := time.Now()
 	if code := p.Run(); code != 1 {
 		t.Fatalf("want exit 1, got %d", code)
@@ -180,10 +185,10 @@ func TestPingerDupsErrorsAndExitCodes(t *testing.T) {
 }
 
 func TestPingerDeadline(t *testing.T) {
-	reply := func(uint16) (Event, time.Duration, bool) {
-		return Event{Kind: EvReply, From: net.IPv4(192, 0, 2, 10).To4(), Size: 64}, time.Duration(rand.IntN(3)+1) * time.Millisecond, true
+	reply := func(uint16) (icmp.Event, time.Duration, bool) {
+		return icmp.Event{Kind: icmp.KindReply, From: net.IPv4(192, 0, 2, 10).To4(), Size: 64}, time.Duration(rand.IntN(3)+1) * time.Millisecond, true
 	}
-	p, out, _ := testPinger(t, []string{"-w", "0.3", "-i", "0.02", "-q", "h"}, reply, 1)
+	p, out, _ := testPinger(t, func(o *Options) { o.Deadline, o.Interval, o.IntervalSet, o.Quiet = ms(300), ms(20), true, true }, reply, 1)
 	start := time.Now()
 	if code := p.Run(); code != 0 {
 		t.Fatalf("exit %d", code)
@@ -196,38 +201,15 @@ func TestPingerDeadline(t *testing.T) {
 	}
 }
 
-func TestReportEdgeCases(t *testing.T) {
-	t0 := time.Unix(1700000000, 0)
-	for _, rtts := range [][]int{{}, {-1}, {5}, {-1, -1, -1}, {1, 2, 3, 400, 2, 1}} {
-		in := &reportInput{Host: "h", IP: "192.0.2.1", Target: "h", Start: t0, End: t0.Add(time.Duration(len(rtts)+1) * time.Second),
-			Now: t0.Add(time.Hour), Interval: time.Second, Size: 56, SockKind: "fake", Main: mkSamples(t0, rtts, time.Second),
-			Hops: []hopView{{TTL: 1, Samples: mkSamples(t0, rtts, time.Second)}}, ChartHeight: 5, Width: 60, Color: true}
-		var b bytes.Buffer
-		writeReport(&b, in)
-		if !strings.Contains(b.String(), "Timeline") {
-			t.Errorf("rtts %v: no timeline", rtts)
-		}
-		var d bytes.Buffer
-		(&dashboard{w: &d, st: style{on: true}}).begin()
-	}
-}
-
-func TestTruncANSI(t *testing.T) {
-	s := style{on: true}.red("hello") + " world"
-	if got := visLen(truncANSI(s, 7)); got != 7 {
-		t.Fatalf("visible len %d", got)
-	}
-}
-
-func fastReply(d time.Duration) func(uint16) (Event, time.Duration, bool) {
-	return func(uint16) (Event, time.Duration, bool) {
-		return Event{Kind: EvReply, From: net.IPv4(192, 0, 2, 10).To4(), Size: 64}, d, true
+func fastReply(d time.Duration) func(uint16) (icmp.Event, time.Duration, bool) {
+	return func(uint16) (icmp.Event, time.Duration, bool) {
+		return icmp.Event{Kind: icmp.KindReply, From: net.IPv4(192, 0, 2, 10).To4(), Size: 64}, d, true
 	}
 }
 
 func TestAdaptivePacing(t *testing.T) {
 	// Non-root -A: replies arrive after 5ms, so sends happen every 200ms (not every 1s).
-	p, _, _ := testPinger(t, []string{"-A", "-w", "1.05", "-q", "--no-report", "h"}, fastReply(5*time.Millisecond), 0)
+	p, _, _ := testPinger(t, func(o *Options) { o.Adaptive, o.Deadline, o.Quiet, o.NoReport = true, ms(1050), true, true }, fastReply(5*time.Millisecond), 0)
 	p.Run()
 	if p.ntransmitted < 5 || p.ntransmitted > 7 {
 		t.Fatalf("adaptive sent %d probes in ~1s, want ~6", p.ntransmitted)
@@ -235,7 +217,7 @@ func TestAdaptivePacing(t *testing.T) {
 }
 
 func TestFloodPacing(t *testing.T) {
-	p, _, _ := testPinger(t, []string{"-f", "-w", "0.3", "-q", "--no-report", "h"}, fastReply(time.Millisecond), 0)
+	p, _, _ := testPinger(t, func(o *Options) { o.Flood, o.Interval, o.Deadline, o.Quiet, o.NoReport = true, 0, ms(300), true, true }, fastReply(time.Millisecond), 0)
 	p.Run()
 	if p.ntransmitted < 60 {
 		t.Fatalf("flood sent only %d probes in 0.3s", p.ntransmitted)
@@ -243,9 +225,9 @@ func TestFloodPacing(t *testing.T) {
 }
 
 func TestLocalErrorEvent(t *testing.T) {
-	p, out, errOut := testPinger(t, []string{"-c", "2", "-i", "0.01", "--no-report", "h"}, fastReply(time.Millisecond), 0)
+	p, out, errOut := testPinger(t, func(o *Options) { o.Count, o.Interval, o.IntervalSet, o.NoReport = 2, ms(10), true, true }, fastReply(time.Millisecond), 0)
 	fc := p.conn.(*fakeConn)
-	fc.ch <- Event{Kind: EvError, Local: true, Errno: 90, Info: 1500, TTL: -1}
+	fc.ch <- icmp.Event{Kind: icmp.KindError, Local: true, Errno: 90, Info: 1500, TTL: -1}
 	if code := p.Run(); code != 0 {
 		t.Fatalf("exit %d", code)
 	}

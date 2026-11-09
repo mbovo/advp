@@ -1,4 +1,6 @@
-package main
+// Package cli implements the advp command line: iputils compatible option
+// parsing, destination resolution and socket setup.
+package cli
 
 import (
 	"context"
@@ -13,20 +15,22 @@ import (
 	"time"
 
 	"golang.org/x/term"
+
+	"github.com/mbovo/advp/internal/icmp"
+	"github.com/mbovo/advp/internal/ping"
+	"github.com/mbovo/advp/internal/version"
 )
 
-func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
-}
-
-func run(args []string, stdout, stderr io.Writer) int {
+// Run executes advp with args (without the program name) and returns the
+// process exit code: 0 on success, 1 when no reply was received, 2 on errors.
+func Run(args []string, stdout, stderr io.Writer) int {
 	opt, err := parseArgs(args)
 	switch {
 	case errors.Is(err, errHelp):
 		printUsage(stdout)
 		return 0
 	case errors.Is(err, errVersion):
-		fmt.Fprintf(stdout, "advp %s (iputils ping compatible)\n", version)
+		fmt.Fprintln(stdout, version.String())
 		return 0
 	case err != nil:
 		fmt.Fprintf(stderr, "advp: %v\nTry 'advp -h' for more information.\n", err)
@@ -63,7 +67,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	warnings := opt.Warnings
-	cfg := sockConfig{
+	cfg := icmp.Config{
 		V6: v6, Dst: dst, Zone: zone, TTL: opt.TTL, TOS: opt.TOS, Mark: opt.Mark, MarkSet: opt.MarkSet,
 		PMTU: opt.PMTU, Broadcast: opt.Broadcast, DontRoute: opt.DontRoute, Debug: opt.Debug,
 		NoMcastLoop: opt.NoMcastLoop, Connect: opt.Connect, RecordRoute: opt.RecordRoute,
@@ -85,7 +89,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	conn, err := openICMP(cfg)
+	conn, err := icmp.Open(cfg)
 	if err != nil {
 		fmt.Fprintf(stderr, "advp: %v\n", err)
 		return 2
@@ -94,26 +98,26 @@ func run(args []string, stdout, stderr io.Writer) int {
 		warnings = append(warnings, "-R needs a raw socket (root / CAP_NET_RAW) to read the route back")
 	}
 
-	var hops []*hopState
+	var hops []icmp.Conn
 	for ttl := 1; ttl <= opt.Hops; ttl++ {
 		hc := cfg
 		hc.TTL, hc.Ident, hc.RecordRoute, hc.PreferRaw = ttl, -1, false, false
 		var hw []string
 		hc.Warnings = &hw
-		c, err := openICMP(hc)
+		c, err := icmp.Open(hc)
 		if err == nil && c.FilterID() && c.ID() == conn.ID() {
 			c.Close()
-			c, err = openICMP(hc)
+			c, err = icmp.Open(hc)
 		}
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("hop probing disabled: %v", err))
 			for _, h := range hops {
-				h.conn.Close()
+				h.Close()
 			}
 			hops = nil
 			break
 		}
-		hops = append(hops, &hopState{ttl: ttl, conn: c, series: newSeries()})
+		hops = append(hops, c)
 	}
 
 	for _, w := range warnings {
@@ -134,18 +138,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if isName {
 		host = strings.TrimSuffix(host, ".")
 	}
-	p := &Pinger{
-		opt: opt, out: stdout, errOut: stderr, host: host, dst: dst, v6: v6, isName: isName,
-		conn: conn, hops: hops, names: newNameCache(), sigs: sigs, color: color, root: root, sockKind: kind,
-	}
+	dash := false
 	if opt.TUI {
-		if !stdoutTTY {
-			fmt.Fprintln(stderr, "advp: warning: --tui needs a terminal, falling back to line output")
+		if stdoutTTY {
+			dash = true
 		} else {
-			p.dash = &dashboard{w: stdout, st: style{on: color}}
+			fmt.Fprintln(stderr, "advp: warning: --tui needs a terminal, falling back to line output")
 		}
 	}
-	return p.Run()
+	return ping.New(ping.Config{
+		Options: opt, Host: host, Dst: dst, IsName: isName, Conn: conn, HopConns: hops,
+		Stdout: stdout, Stderr: stderr, Signals: sigs, Color: color, Privileged: root,
+		SockKind: kind, Dashboard: dash,
+	}).Run()
 }
 
 func isTerminal(w io.Writer) bool {

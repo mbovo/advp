@@ -1,4 +1,4 @@
-package main
+package stats
 
 import (
 	"testing"
@@ -20,7 +20,7 @@ func mkSamples(start time.Time, rtts []int, step time.Duration) []Sample {
 func TestAggregate(t *testing.T) {
 	t0 := time.Unix(1000, 0)
 	s := mkSamples(t0, []int{10, 20, -1, 30, 40, 50, 60, 70, 80, 90, 100}, time.Second)
-	a := aggregate(s, t0.Add(time.Hour), 0)
+	a := Aggregate(s, t0.Add(time.Hour), 0)
 	if a.Sent != 11 || a.Recv != 10 || a.Lost != 1 || a.Pending != 0 {
 		t.Fatalf("counts: %+v", a)
 	}
@@ -40,7 +40,7 @@ func TestAggregate(t *testing.T) {
 
 	// The unanswered last probe is pending while it is still young.
 	s = mkSamples(t0, []int{10, -1}, time.Second)
-	a = aggregate(s, t0.Add(1500*time.Millisecond), time.Second)
+	a = Aggregate(s, t0.Add(1500*time.Millisecond), time.Second)
 	if a.Pending != 1 || a.Lost != 0 || a.LossPct() != 0 {
 		t.Fatalf("pending: %+v", a)
 	}
@@ -49,7 +49,7 @@ func TestAggregate(t *testing.T) {
 func TestBucketize(t *testing.T) {
 	t0 := time.Unix(1000, 0)
 	s := mkSamples(t0, []int{1, 2, 3, -1, 5, 6}, time.Second)
-	b := bucketize(s, t0, t0.Add(6*time.Second), 2*time.Second, t0.Add(time.Hour), 0)
+	b := Bucketize(s, t0, t0.Add(6*time.Second), 2*time.Second, t0.Add(time.Hour), 0)
 	if len(b) != 3 || b[0].Sent != 2 || b[1].Lost != 1 || b[2].Recv != 2 {
 		t.Fatalf("buckets: %+v", b)
 	}
@@ -59,13 +59,13 @@ func TestBucketize(t *testing.T) {
 }
 
 func TestNiceBucket(t *testing.T) {
-	if got := niceBucket(10*time.Minute, 20, time.Second); got != 30*time.Second {
+	if got := NiceBucket(10*time.Minute, 20, time.Second); got != 30*time.Second {
 		t.Errorf("got %v", got)
 	}
-	if got := niceBucket(5*time.Second, 20, time.Second); got != time.Second {
+	if got := NiceBucket(5*time.Second, 20, time.Second); got != time.Second {
 		t.Errorf("got %v", got)
 	}
-	if got := niceBucket(72*time.Hour, 20, time.Second); got != 6*time.Hour {
+	if got := NiceBucket(72*time.Hour, 20, time.Second); got != 6*time.Hour {
 		t.Errorf("got %v", got)
 	}
 }

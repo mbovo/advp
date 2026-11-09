@@ -1,0 +1,56 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - copyloopvar
+    - errorlint
+    - gocritic
+    - misspell
+    - nolintlint
+    - revive
+    - unconvert
+    - usestdlibvars
+  settings:
+    errcheck:
+      exclude-functions:
+        - io.WriteString # terminal output
+        - (*encoding/csv.Writer).Write # errors are sticky, checked via Error()
+    staticcheck:
+      checks:
+        - all
+        - -ST1000 # package comments are enforced by revive
+        - -ST1005 # iputils-compatible error messages are capitalised
+        - -QF1001 # De Morgan rewrites hurt readability here
+    gocritic:
+      disabled-checks:
+        - ifElseChain
+    revive:
+      rules:
+        - name: exported
+        - name: package-comments
+        - name: var-naming
+        - name: indent-error-flow
+        - name: error-strings
+          disabled: true # iputils-compatible messages are capitalised
+        - name: unused-parameter
+          disabled: true
+  exclusions:
+    presets:
+      - std-error-handling # unchecked Close / fmt.Fprint* on terminal output
+      - common-false-positives
+    rules:
+      - path: _test\.go
+        linters: [errcheck, revive]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/mbovo/advp
