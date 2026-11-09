@@ -12,17 +12,24 @@
 >   acknowledged here.
 > - **Quality:** human review is not a guarantee of correctness. Use it at your
 >   own risk, especially with raw sockets and elevated privileges.
-> - **Environmental cost:** generating this code consumed roughly **2,000 tokens**
->   of LLM inference. Rough estimates (inference only, excluding model training
->   and hardware manufacturing; real values vary widely by model and datacenter):
+> - **Environmental cost:** the coding session that produced this project made
+>   about **175 model requests** (including one code-review sub-agent). Each
+>   request re-reads the whole conversation, which grew to 150k+ tokens, so the
+>   session processed roughly **15 – 25 million input tokens** (mostly cached)
+>   and generated about **0.2 – 0.3 million output tokens** (code, commands,
+>   reasoning). These are estimates reconstructed by the model itself, not
+>   metered values. Rough cost (inference only, excluding model training and
+>   hardware manufacturing; real values vary widely by model and datacenter):
 >
->   | Resource | Estimate for ~2k tokens | Assumption |
->   |----------|-------------------------|------------|
->   | Energy   | ~0.5 – 2 Wh             | ~0.3 Wh per typical query, scaled to longer output |
->   | CO₂      | ~0.2 – 0.8 g CO₂e       | ~400 g CO₂e/kWh average grid mix |
->   | Water    | ~1 – 4 mL               | ~1.8 L/kWh datacenter cooling + power generation |
+>   | Resource | Estimate for this session | Assumption |
+>   |----------|---------------------------|------------|
+>   | Energy   | ~0.2 – 0.9 kWh            | ~1–4 J per output token (≈0.3 Wh per typical query, higher with long context) + ~0.02–0.1 J per input token |
+>   | CO₂      | ~0.1 – 0.35 kg CO₂e       | ~400 g CO₂e/kWh average grid mix |
+>   | Water    | ~0.4 – 1.6 L              | ~1.8 L/kWh datacenter cooling + power generation |
 >
->   Small per request, but it adds up at scale.
+>   That is roughly 2 – 9 electric-kettle boils, or up to a dishwasher cycle,
+>   and it grows with every follow-up request: most of the cost comes from
+>   re-reading an ever longer context, not from the code that ends up in the repo.
 
 `advp` is a drop-in replacement for iputils `ping` written in Go. It
 supports most of the GNU/Linux `ping` command line and prints the same
