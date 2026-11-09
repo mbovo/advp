@@ -1,11 +1,13 @@
 # yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+# Releases are produced by .github/workflows/release.yml (see README "Releasing").
+# Local dry run: just release-snapshot
 version: 2
 
 project_name: advp
 
 before:
   hooks:
-    - go mod tidy
+    - go mod download
 
 builds:
   - id: advp
@@ -25,11 +27,37 @@ builds:
     mod_timestamp: "{{ .CommitTimestamp }}"
 
 archives:
-  - formats: [tar.gz]
+  - id: default
+    formats: [tar.gz]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - README.md
       - LICENSE*
+
+nfpms:
+  - id: packages
+    package_name: advp
+    file_name_template: "{{ .ConventionalFileName }}"
+    vendor: Manuel Bovo
+    homepage: https://github.com/mbovo/advp
+    maintainer: Manuel Bovo <manuel.bovo@gmail.com>
+    description: |-
+      iputils-compatible ping with an extended report: loss, latency
+      percentiles and jitter over time, route discovery and per-hop
+      monitoring, a live full-screen view, CSV and HTML exports.
+    formats: [deb, rpm, apk]
+    bindir: /usr/bin
+    section: net
+    priority: optional
+    dependencies:
+      - libcap2-bin # provides setcap (deb); ignored where unavailable
+    scripts:
+      postinstall: packaging/postinstall.sh
+    overrides:
+      rpm:
+        dependencies: [libcap]
+      apk:
+        dependencies: [libcap]
 
 checksum:
   name_template: checksums.txt
@@ -37,10 +65,30 @@ checksum:
 snapshot:
   version_template: "{{ incpatch .Version }}-next"
 
+release:
+  prerelease: auto
+  name_template: "advp {{ .Tag }}"
+
 changelog:
+  use: git
   sort: asc
+  groups:
+    - title: Breaking changes
+      regexp: '^.*?\w+(\([[:word:]-]+\))??!:.+$'
+      order: 0
+    - title: Features
+      regexp: '^.*?feat(\([[:word:]-]+\))??:.+$'
+      order: 1
+    - title: Bug fixes
+      regexp: '^.*?fix(\([[:word:]-]+\))??:.+$'
+      order: 2
+    - title: Other changes
+      order: 999
   filters:
     exclude:
-      - "^docs:"
-      - "^test:"
-      - "^chore:"
+      - '^docs(\(.*\))?:'
+      - '^test(\(.*\))?:'
+      - '^ci(\(.*\))?:'
+      - '^chore(\(.*\))?:'
+      - "Merge pull request"
+      - "Merge branch"

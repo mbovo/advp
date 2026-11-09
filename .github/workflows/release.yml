@@ -1,15 +1,33 @@
+# Release pipeline.
+# - Merge/push to main: run the full test suite, compute the next version from
+#   Conventional Commits (scripts/next-version.sh), tag it and release it.
+#   Nothing is released when only docs/ci/test/chore commits landed.
+# - Push of a v* tag (manual release): test and release that tag.
+# Tags pushed by this workflow use GITHUB_TOKEN, so they do not re-trigger it.
 name: Release
 
 on:
   push:
+    branches: [main]
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
-  goreleaser:
+  test:
+    uses: ./.github/workflows/test.yml
+
+  release:
+    needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v5
         with:
@@ -17,10 +35,35 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - run: go test -race ./...
+      - name: Decide the release tag
+        id: tag
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "Releasing pushed tag $GITHUB_REF_NAME"
+            echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          next=$(scripts/next-version.sh)
+          if [ -z "$next" ]; then
+            echo "No releasable commits: nothing to do."
+            exit 0
+          fi
+          if git rev-parse -q --verify "refs/tags/$next" >/dev/null; then
+            echo "::error::tag $next already exists"
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$next" -m "advp $next"
+          git push origin "$next"
+          echo "tag=$next" >> "$GITHUB_OUTPUT"
       - uses: goreleaser/goreleaser-action@v6
+        if: steps.tag.outputs.tag != ''
         with:
           version: "~> v2"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Summary
+        if: steps.tag.outputs.tag != ''
+        run: echo "Released [${{ steps.tag.outputs.tag }}](${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ steps.tag.outputs.tag }})" >> "$GITHUB_STEP_SUMMARY"

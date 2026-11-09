@@ -16,8 +16,11 @@ ldflags := "-s -w -X " + pkg + "/internal/version.Version=" + version + " -X " +
 # Pinned tool versions (installed by `just tools`).
 golangci_version := "v2.14.0"
 govulncheck_version := "v1.8.0"
-goreleaser_version := "v2.12.0"
+goreleaser_version := "v2.18.2"
+actionlint_version := "v1.7.12"
 golangci := env("GOLANGCI_LINT", "golangci-lint")
+goreleaser := env("GORELEASER", "goreleaser")
+actionlint := env("ACTIONLINT", "actionlint")
 
 # Target platforms for `just cross` (the ICMP code supports Linux and macOS).
 platforms := "linux/amd64 linux/arm64 darwin/amd64 darwin/arm64"
@@ -98,10 +101,24 @@ cover:
 cover-html: cover
     go tool cover -html=coverage.out
 
-# Real ICMP smoke test against loopback (needs ping sockets or root)
+# Smoke tests: run the built binary end to end (ICMP cases skip if blocked unless ADVP_REQUIRE_ICMP=1)
 [group('test')]
 smoke: build
+    ADVP_BIN={{ justfile_directory() }}/{{ bin_dir }}/{{ binary }} go test -tags smoke -count=1 -v ./test/smoke/
+
+# Quick manual check: ping 127.0.0.1 three times with the built binary
+[group('test')]
+ping-loopback: build
     ./{{ bin_dir }}/{{ binary }} -c 3 -i 0.2 -W 1 --color never 127.0.0.1
+
+# Test the release scripts (next-version.sh)
+[group('test')]
+test-scripts:
+    bash scripts/next-version_test.sh
+
+# Unit tests, script tests and smoke tests
+[group('test')]
+test-all: test-race test-scripts smoke
 
 # ---------------------------------------------------------------- quality
 
@@ -118,7 +135,7 @@ fmt-check:
 # go vet for every supported OS
 [group('quality')]
 vet:
-    for os in {{ lint_goos }}; do echo "→ vet GOOS=$os"; GOOS=$os go vet ./...; done
+    for os in {{ lint_goos }}; do echo "→ vet GOOS=$os"; GOOS=$os go vet -tags smoke ./...; done
 
 # Run golangci-lint for every supported OS
 [group('quality')]
@@ -129,6 +146,12 @@ lint:
 [group('quality')]
 lint-fix:
     {{ golangci }} run --fix ./...
+
+# Lint GitHub workflows (actionlint) and shell scripts (shellcheck, if installed)
+[group('quality')]
+lint-ci:
+    {{ actionlint }}
+    if command -v shellcheck >/dev/null; then shellcheck scripts/*.sh packaging/*.sh; else echo "shellcheck not installed, skipped"; fi
 
 # Scan dependencies for known vulnerabilities
 [group('quality')]
@@ -145,23 +168,28 @@ tidy:
 tidy-check:
     go mod tidy -diff
 
-# Everything CI runs: formatting, tidiness, vet, lint, race tests, cross build
+# Pre-push gate: fmt, tidy, vet, lint, race tests, script tests, cross build (CI also runs smoke, vuln, snapshot)
 [group('quality')]
-check: fmt-check tidy-check vet lint test-race cross
+check: fmt-check tidy-check vet lint test-race test-scripts cross
 
 # ---------------------------------------------------------------- release
 
 # Validate the GoReleaser configuration
 [group('release')]
 release-check:
-    goreleaser check
+    {{ goreleaser }} check
 
 # Build a local snapshot release into ./dist (no publishing)
 [group('release')]
 release-snapshot:
-    goreleaser release --snapshot --clean
+    {{ goreleaser }} release --snapshot --clean
 
-# Create and push an annotated tag, e.g. `just tag v1.2.0` (CI publishes the release)
+# Print the version the next merge to main would release (Conventional Commits)
+[group('release')]
+next-version:
+    scripts/next-version.sh
+
+# Manually tag and push a release, e.g. `just tag v1.2.0` (the Release workflow publishes it)
 [group('release')]
 tag v:
     @[[ "{{ v }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "version must look like v1.2.3"; exit 1; }
@@ -177,6 +205,7 @@ tools:
     go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@{{ golangci_version }}
     go install golang.org/x/vuln/cmd/govulncheck@{{ govulncheck_version }}
     go install github.com/goreleaser/goreleaser/v2@{{ goreleaser_version }}
+    go install github.com/rhysd/actionlint/cmd/actionlint@{{ actionlint_version }}
 
 # Remove build artifacts
 [group('misc')]
