@@ -2,6 +2,7 @@ version: "2"
 
 run:
   timeout: 5m
+  build-tags: [smoke] # lint the end-to-end tests in test/smoke too
 
 linters:
   default: standard # errcheck, govet, ineffassign, staticcheck, unused
