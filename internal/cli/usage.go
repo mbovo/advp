@@ -64,6 +64,9 @@ advp extensions:
                          --tui and --dashboard are aliases
   --hops <n>             number of first hops to monitor (default 2, 0 disables)
   --no-hops              do not probe the first hops
+  --hops-max[=N]         trace the route first (TTL 1..N, default 30, 3 probes
+                         per hop) and then monitor every hop up to the
+                         destination; overrides --hops
   --hop-interval <dur>   interval between hop probes (default max(1s, -i))
   --bucket <dur>         time-bucket width for the timeline table (default auto)
   --chart-height <n>     height of the RTT chart in rows (default 10)

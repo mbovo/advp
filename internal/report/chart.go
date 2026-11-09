@@ -58,7 +58,9 @@ func (in *Input) chartLayout() chartLayout {
 
 func rep(s string, n int) string { return strings.Repeat(s, n) }
 
-func chartLines(in *Input, st style, height int) []string {
+// chartLines renders the RTT chart plus loss, jitter and up to hopSparks
+// per-hop sparklines.
+func chartLines(in *Input, st style, height, hopSparks int) []string {
 	if height < 3 {
 		height = 3
 	}
@@ -165,7 +167,7 @@ func chartLines(in *Input, st style, height int) []string {
 	}
 	out = append(out, sparkLine(st, "jitter", scaleSpark(st, jit, has, nil, st.cyan), cl.colW, "max "+fmtMsF(maxOf(jit))+" ms"))
 
-	for _, h := range in.Hops {
+	for _, h := range in.Hops[:min(hopSparks, len(in.Hops))] {
 		hb := stats.Bucketize(h.Samples, in.Start, end, cl.bucket, in.Now, in.LostAfter)
 		v := make([]float64, len(hb))
 		has := make([]bool, len(hb))

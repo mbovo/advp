@@ -26,6 +26,10 @@ var longWithArg = map[string]bool{
 	"hops": true, "hop-interval": true, "bucket": true, "csv": true,
 	"html": true, "color": true, "chart-height": true,
 }
+
+// Long options with an optional numeric argument (--opt, --opt=N or --opt N).
+var longOptArg = map[string]string{"hops-max": "30"}
+
 var longFlags = map[string]bool{
 	"help": true, "version": true, "live": true, "tui": true, "dashboard": true,
 	"no-hops": true, "no-report": true, "no-color": true,
@@ -52,6 +56,17 @@ func parseArgs(args []string) (*ping.Options, error) {
 					return nil, fmt.Errorf("option '--%s' doesn't allow an argument", name)
 				}
 				if err := applyLong(o, name, ""); err != nil {
+					return nil, err
+				}
+			case longOptArg[name] != "":
+				if !hasVal {
+					val = longOptArg[name]
+					if i+1 < len(args) && isSmallUint(args[i+1]) {
+						i++
+						val = args[i]
+					}
+				}
+				if err := applyLong(o, name, val); err != nil {
 					return nil, err
 				}
 			case longWithArg[name]:
@@ -112,6 +127,9 @@ func parseArgs(args []string) (*ping.Options, error) {
 	}
 	if o.Flood && !o.IntervalSet {
 		o.Interval = 0
+	}
+	if o.HopsMax > 0 && o.Hops == 0 {
+		return nil, errors.New("--hops-max cannot be combined with --no-hops or --hops 0")
 	}
 	if o.Flood && o.Adaptive {
 		return nil, errors.New("-f and -A are incompatible")
@@ -242,6 +260,8 @@ func applyLong(o *ping.Options, name, val string) error {
 		o.NoReport = true
 	case "no-color":
 		o.Color = "never"
+	case "hops-max":
+		o.HopsMax, err = parseIntRange(val, 1, 64)
 	case "hops":
 		o.Hops, err = parseIntRange(val, 0, 30)
 	case "hop-interval":
@@ -318,4 +338,18 @@ func parseTOS(s string) (int, error) {
 		return 0, fmt.Errorf("the decimal value of TOS bits must be in range 0-255: %s", s)
 	}
 	return int(v), nil
+}
+
+// isSmallUint reports whether s looks like the value of an optional numeric
+// argument rather than a destination (plain decimal, at most 3 digits).
+func isSmallUint(s string) bool {
+	if s == "" || len(s) > 3 {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }

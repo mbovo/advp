@@ -100,7 +100,11 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	var hops []icmp.Conn
-	for ttl := 1; ttl <= opt.Hops; ttl++ {
+	nHops := opt.Hops
+	if opt.HopsMax > 0 {
+		nHops = opt.HopsMax
+	}
+	for ttl := 1; ttl <= nHops; ttl++ {
 		hc := cfg
 		hc.TTL, hc.Ident, hc.RecordRoute, hc.PreferRaw = ttl, -1, false, false
 		var hw []string

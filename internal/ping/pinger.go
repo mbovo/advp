@@ -31,22 +31,24 @@ type hopState struct {
 	series *stats.Series
 	seq    int
 	addrs  []report.HopAddr
-	cur    string
 }
 
-func (h *hopState) note(ip string, at time.Time) (changed bool) {
+// note records a responder and reports whether it was never seen before.
+func (h *hopState) note(ip string, at time.Time) (isNew bool) {
 	for i := range h.addrs {
 		if h.addrs[i].IP == ip {
 			h.addrs[i].Last = at
 			h.addrs[i].Count++
-			changed = h.cur != ip
-			h.cur = ip
-			return changed
+			return false
 		}
 	}
 	h.addrs = append(h.addrs, report.HopAddr{IP: ip, First: at, Last: at, Count: 1})
-	h.cur = ip
 	return true
+}
+
+// seed registers a responder found during route discovery.
+func (h *hopState) seed(ip string, at time.Time, count int) {
+	h.addrs = append(h.addrs, report.HopAddr{IP: ip, First: at, Last: at, Count: count})
 }
 
 // Pinger runs one ping session.
@@ -97,6 +99,13 @@ type Pinger struct {
 	lastFrame time.Time
 	frameGap  time.Duration
 	frames    int
+
+	// route discovery (--hops-max)
+	traceGap  time.Duration
+	traceWait time.Duration
+	traced    bool
+	pathHops  int   // hop number of the destination, 0 if unknown
+	traceErr  error // first send error during route discovery
 }
 
 // Config wires a Pinger to its sockets, output and environment.
@@ -133,6 +142,7 @@ func New(c Config) *Pinger {
 		v6: c.Dst.To4() == nil, isName: c.IsName, conn: c.Conn, sigs: c.Signals,
 		color: c.Color, root: c.Privileged, sockKind: c.SockKind, names: newNameCache(), keysIn: c.Keys,
 	}
+	p.traceGap, p.traceWait = defaultTraceGap, defaultTraceWait
 	for i, hc := range c.HopConns {
 		p.hops = append(p.hops, &hopState{ttl: i + 1, conn: hc, series: stats.NewSeries()})
 	}
@@ -378,11 +388,13 @@ func (p *Pinger) handle(ce connEvent) {
 		}
 		return
 	}
-	if ce.idx == 0 {
+	switch {
+	case ce.idx == 0:
 		p.handleMain(ce.ev)
-	} else {
+	case ce.idx <= len(p.hops):
 		p.handleHop(p.hops[ce.idx-1], ce.ev)
 	}
+	// Other indexes belong to hop sockets dropped after route discovery.
 }
 
 func (p *Pinger) handleMain(ev icmp.Event) {
@@ -530,7 +542,7 @@ func (p *Pinger) handleHop(h *hopState, ev icmp.Event) {
 		}
 		verb := "hop"
 		if len(h.addrs) > 1 {
-			verb = "hop changed:"
+			verb = "new responder at hop"
 		}
 		p.printf("%s[%s %d] %s%s time=%s ms\n", p.tsPrefix(ev.At), verb, h.ttl,
 			p.fmtAddr(ev.From, !p.opt.Numeric, 300*time.Millisecond), what, formatRTT(rtt, p.opt.Precise))
@@ -598,6 +610,9 @@ func (p *Pinger) Run() int {
 	for i, c := range conns {
 		p.wg.Add(1)
 		go p.reader(i, c)
+	}
+	if p.opt.HopsMax > 0 && len(p.hops) > 0 {
+		p.applyTrace(p.trace())
 	}
 
 	if p.v6 {
@@ -807,7 +822,7 @@ func (p *Pinger) reportInput(now time.Time, final bool) *report.Input {
 		Start: p.start, End: end, Now: now, LostAfter: lost, Final: final,
 		Interval: p.opt.Interval, Size: p.opt.Size, SockKind: p.sockKind,
 		Main: p.series.Samples, Bucket: p.opt.Bucket, ChartHeight: p.opt.ChartHeight,
-		Width: report.TermWidth(), Color: p.color, Errors: p.nerrors,
+		Width: report.TermWidth(), Color: p.color, Errors: p.nerrors, Traced: p.traced, PathHops: p.pathHops,
 	}
 	in.Name = func(ip string) string {
 		if p.opt.Numeric {

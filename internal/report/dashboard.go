@@ -25,6 +25,7 @@ const (
 	ViewReport   View = iota // chart and timeline table, like the final report
 	ViewChart                // large RTT chart
 	ViewTimeline             // timeline table only
+	ViewHops                 // per-hop table (mtr style), useful with --hops-max
 	numViews
 )
 
@@ -32,7 +33,7 @@ const (
 func (v View) Next() View { return (v + 1) % numViews }
 
 func (v View) String() string {
-	return [...]string{"report", "chart", "table"}[v]
+	return [...]string{"report", "chart", "table", "hops"}[v]
 }
 
 // DashStatus is the session state shown in the dashboard header and footer.
@@ -122,7 +123,10 @@ func (d *Dashboard) RenderSize(in *Input, s DashStatus, width, height int) {
 func (d *Dashboard) frame(in *Input, s DashStatus, width, height int) []string {
 	st := d.st
 	summary := summaryLines(in, st)
-	hops := hopTable(in, st)
+	var hops []string
+	if hl := hopTable(in, st); len(hl) > 0 {
+		hops = append([]string{st.bold(in.hopTitle())}, hl...)
+	}
 	recent := s.Recent
 	if len(recent) > 3 {
 		recent = recent[len(recent)-3:]
@@ -135,12 +139,29 @@ func (d *Dashboard) frame(in *Input, s DashStatus, width, height int) []string {
 	}
 
 	body := height - 2 // header and footer
-	chartFixed := 5 + len(in.Hops)
+	// Per-hop sparklines under the chart: all of them in the chart view (if
+	// they fit), only short routes in the report view.
+	sparks := 0
+	switch {
+	case s.View == ViewChart:
+		sparks = min(len(in.Hops), max(0, body-section(summary)-5-1-8))
+	case s.View == ViewReport && len(in.Hops) <= 4:
+		sparks = len(in.Hops)
+	}
+	chartFixed := 5 + sparks
 	minMain := chartFixed + 4
+	if s.View == ViewHops {
+		minMain = 0 // the hop table is the main content
+	}
 	if body-section(summary)-section(hops)-section(recent) < minMain {
 		recent = nil
 	}
-	if body-section(summary)-section(hops) < minMain {
+	switch {
+	case s.View == ViewHops:
+		if body-section(summary)-section(hops) < 0 && len(summary) > 3 {
+			summary = summary[:3] // period, probes, RTT
+		}
+	case body-section(summary)-section(hops) < minMain:
 		hops = nil
 	}
 	avail := body - section(summary) - section(hops) - section(recent)
@@ -176,7 +197,7 @@ func (d *Dashboard) frame(in *Input, s DashStatus, width, height int) []string {
 	add(summary)
 	add(hops)
 	if chartH >= 3 {
-		add(chartLines(in, st, chartH))
+		add(chartLines(in, st, chartH, sparks))
 	}
 	if tlRows > 0 {
 		b := in.tableBucket()

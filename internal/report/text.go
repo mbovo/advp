@@ -44,6 +44,8 @@ type Input struct {
 	Width            int
 	Color            bool
 	Errors           int
+	Traced           bool // hops come from route discovery (--hops-max)
+	PathHops         int  // traced hop number of the destination, 0 if unknown
 	Name             func(ip string) string
 }
 
@@ -163,7 +165,14 @@ func summaryLines(in *Input, st style) []string {
 		out = append(out, key("Outages")+fmt.Sprintf("%d loss episode(s)%slongest %d consecutive probe(s) at %s (%s)",
 			ep, sep, lo.count, lo.start.Format("15:04:05"), fmtDur(lo.end.Sub(lo.start)+in.Interval)))
 	}
-	if a.TTL >= 0 {
+	switch {
+	case in.PathHops > 0:
+		p := fmt.Sprintf("destination at hop %d (traced)", in.PathHops)
+		if a.TTL >= 0 {
+			p += fmt.Sprintf("%sreply TTL %d", sep, a.TTL)
+		}
+		out = append(out, key("Path")+p)
+	case a.TTL >= 0:
 		initial, hops := stats.GuessHops(a.TTL)
 		out = append(out, key("Path")+fmt.Sprintf("reply TTL %d → ≈%d hops away (initial TTL %d)", a.TTL, hops, initial))
 	}
@@ -310,14 +319,14 @@ func Write(w io.Writer, in *Input) {
 	lines := []string{"", st.bold(st.dim("══") + title + st.dim(rep("═", fill)))}
 	lines = append(lines, summaryLines(in, st)...)
 	if hl := hopTable(in, st); len(hl) > 0 {
-		lines = append(lines, "", st.bold(fmt.Sprintf("First %d hop(s) vs destination", len(in.Hops))))
+		lines = append(lines, "", st.bold(in.hopTitle()))
 		lines = append(lines, hl...)
 	}
 	b := in.tableBucket()
 	lines = append(lines, "", st.bold("Timeline")+st.dim(fmt.Sprintf("  (bucket %s, times in ms, loss over completed probes)", b)))
 	lines = append(lines, timelineTable(in, st, b, 0)...)
 	lines = append(lines, "")
-	lines = append(lines, chartLines(in, st, in.ChartHeight)...)
+	lines = append(lines, chartLines(in, st, in.ChartHeight, len(in.Hops))...)
 	for _, l := range lines {
 		fmt.Fprintln(w, l)
 	}
@@ -327,4 +336,11 @@ func Write(w io.Writer, in *Input) {
 func (in *Input) timelineRows() int {
 	b := in.tableBucket()
 	return int((in.span() + b - 1) / b)
+}
+
+func (in *Input) hopTitle() string {
+	if in.Traced {
+		return fmt.Sprintf("Route to destination (%d hops traced) vs destination", len(in.Hops))
+	}
+	return fmt.Sprintf("First %d hop(s) vs destination", len(in.Hops))
 }

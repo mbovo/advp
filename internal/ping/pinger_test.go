@@ -114,7 +114,7 @@ func TestPingerEndToEnd(t *testing.T) {
 		"20 packets transmitted, 18 received, 10% packet loss",
 		"rtt min/avg/max/mdev = ",
 		"[hop 1] 10.0.0.1 time=",
-		"[hop changed: 2] 10.0.1.2",
+		"[new responder at hop 2] 10.0.1.2",
 		"advp report",
 		"First 2 hop(s) vs destination",
 		"Timeline",

@@ -46,6 +46,7 @@ type Options struct {
 
 	// advp extensions
 	Hops        int
+	HopsMax     int // --hops-max: trace up to this many hops first, then monitor all of them
 	HopInterval time.Duration
 	Bucket      time.Duration
 	ChartHeight int

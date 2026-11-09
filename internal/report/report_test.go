@@ -130,3 +130,33 @@ func TestNiceCeil(t *testing.T) {
 		}
 	}
 }
+
+func TestDashboardManyHops(t *testing.T) {
+	in := mkInput([]int{1, 2, 3, 4, 5, 6}, false)
+	in.Traced, in.PathHops = true, 16
+	for ttl := 2; ttl <= 15; ttl++ {
+		in.Hops = append(in.Hops, HopView{TTL: ttl, Samples: in.Main, Addrs: []HopAddr{{IP: "10.0.0.1", Count: 6}}})
+	}
+	d := NewDashboard(io.Discard, false)
+	for _, size := range [][2]int{{80, 24}, {160, 50}} {
+		for v := ViewReport; v < numViews; v++ {
+			in.Width = size[0]
+			lines := d.frame(in, DashStatus{Title: "h", View: v, Keys: true}, size[0], size[1])
+			text := strings.Join(lines, "\n")
+			if len(lines) != size[1] {
+				t.Fatalf("%v view %v: %d lines", size, v, len(lines))
+			}
+			if v == ViewHops && !strings.Contains(text, "Route to destination (15 hops traced)") {
+				t.Fatalf("%v hops view without the hop table:\n%s", size, text)
+			}
+			if size[1] == 50 && v == ViewReport && !strings.Contains(text, "RTT over time") {
+				t.Fatalf("report view lost the chart with many hops:\n%s", text)
+			}
+		}
+	}
+	var b bytes.Buffer
+	Write(&b, in)
+	if !strings.Contains(b.String(), "destination at hop 16 (traced)") || !strings.Contains(b.String(), "hop 15 │") {
+		t.Fatal("final report misses traced path info or hop sparklines")
+	}
+}

@@ -46,3 +46,28 @@ func TestParseLive(t *testing.T) {
 		t.Error("live must be off by default")
 	}
 }
+
+func TestParseHopsMax(t *testing.T) {
+	cases := []struct {
+		args []string
+		max  int
+		host string
+	}{
+		{[]string{"--hops-max", "h"}, 30, "h"},
+		{[]string{"--hops-max=12", "h"}, 12, "h"},
+		{[]string{"--hops-max", "20", "h"}, 20, "h"},
+		{[]string{"h", "--hops-max"}, 30, "h"},
+		{[]string{"--hops-max", "8.8.8.8"}, 30, "8.8.8.8"},
+	}
+	for _, c := range cases {
+		o, err := parseArgs(c.args)
+		if err != nil || o.HopsMax != c.max || o.Host != c.host {
+			t.Errorf("%v: max=%d host=%q err=%v", c.args, o.HopsMax, o.Host, err)
+		}
+	}
+	for _, bad := range [][]string{{"--hops-max=0", "h"}, {"--hops-max=65", "h"}, {"--hops-max", "--no-hops", "h"}} {
+		if _, err := parseArgs(bad); err == nil {
+			t.Errorf("%v: expected error", bad)
+		}
+	}
+}

@@ -35,6 +35,9 @@ the whole session:
 - **First hops**: probes with TTL=1..N (default 2) run alongside the main ping.
   Each hop shows its address(es) and reverse DNS name, plus loss, RTT
   percentiles and jitter. Route changes are detected.
+- **Whole route** (`--hops-max`): a parallel traceroute runs before the ping
+  starts, then every hop up to the destination is monitored the same way.
+  See [Route discovery](#route-discovery).
 - **Timeline table**: one row per time bucket from start to exit, with
   loss, latency percentiles, jitter and per-hop latency/loss.
 - **Terminal charts**: an RTT chart (p50 bars, p50→p90 band, max markers,
@@ -77,6 +80,7 @@ advp -c 100 -i 0.2 example.com     # 100 probes, 200 ms apart
 advp -w 600 --live example.com     # 10-minute live report
 advp -q -w 3600 --html net.html --csv net.csv 8.8.8.8   # 1-hour unattended capture
 advp --hops 4 --bucket 1m gw.lan   # watch 4 hops, 1-minute timeline rows
+advp --hops-max --live example.com # trace the route, then watch every hop live
 ```
 
 Ctrl-C (SIGINT/SIGTERM) stops and prints the report. Ctrl-\ (SIGQUIT)
@@ -127,6 +131,7 @@ Exit codes match iputils: `0` if replies were received, `1` if none were
 |---|---|
 | `--live` (aliases `--tui`, `--dashboard`) | full-screen live report, redrawn on every packet |
 | `--hops N` / `--no-hops` | number of first hops to probe (default 2) |
+| `--hops-max[=N]` | trace the route first (max N hops, default 30), then monitor every hop before the destination; overrides `--hops` |
 | `--hop-interval D` | hop probe interval (default `max(1s, -i)`) |
 | `--bucket D` | timeline row width (default: auto, about 20 rows) |
 | `--chart-height N` | RTT chart rows (default 10) |
@@ -136,6 +141,33 @@ Exit codes match iputils: `0` if replies were received, `1` if none were
 | `--color auto\|always\|never`, `--no-color` | ANSI colors (honours `NO_COLOR`) |
 
 Durations accept Go syntax (`500ms`, `1m30s`) or seconds (`0.5`).
+
+## Route discovery
+
+`--hops-max` (or `--hops-max=N`; N is 1-64, default 30) runs a traceroute
+before the ping starts. It sends 3 ICMP echo probes with each TTL from 1 to N,
+all TTLs in parallel, so discovery takes about 1.5 s whatever the path length.
+The result is printed in traceroute format:
+
+```
+traceroute to one.one.one.one (1.1.1.1), 30 hops max, 3 probes per hop
+ 1  router.lan (192.168.1.254)  1.912 ms  1.402 ms  1.377 ms
+ 2  * * *
+ 3  100.64.0.1  9.810 ms  10.204 ms  9.931 ms
+ 4  one.one.one.one (1.1.1.1)  12.120 ms  11.902 ms  12.044 ms  (destination)
+→ destination reached at hop 4; monitoring hops 1-3 every 1s
+```
+
+The path ends at the first TTL answered by the destination. If a router
+returns an ICMP unreachable instead (`!H`, `!N`, `!X`…), the path ends at that
+router and it is still monitored. If the destination never answers, every hop
+up to the last one that replied is monitored.
+
+Those hops are then probed every `--hop-interval` for the whole session, and
+they appear in the hop table, the per-hop timeline columns, the sparklines and
+the CSV/HTML exports. During the session, a line is printed only when a hop
+answers from an address not seen before (a route change or a new ECMP path).
+With `-q` only the `→` summary line is printed.
 
 ## Live view
 
@@ -151,7 +183,7 @@ don't overload the terminal, and the view follows terminal resizes.
 |---|---|
 | `q`, `Esc`, `Ctrl-C` | stop; the classic summary and the full report are printed to the normal screen |
 | `p`, `Space` | pause/resume redrawing (probing and statistics continue) |
-| `v`, `Tab` | switch view: report (chart + table) → chart → table |
+| `v`, `Tab` | switch view: report (chart + table) → chart (all hop sparklines) → table → hops (per-hop table, mtr style) |
 | `r`, `Ctrl-L` | clear and redraw |
 
 If stdout is not a terminal, `--live` falls back to normal line output.
