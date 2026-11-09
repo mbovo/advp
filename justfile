@@ -13,15 +13,18 @@ commit := `git rev-parse HEAD 2>/dev/null || true`
 date := `date -u +%Y-%m-%dT%H:%M:%SZ`
 ldflags := "-s -w -X " + pkg + "/internal/version.Version=" + version + " -X " + pkg + "/internal/version.Commit=" + commit + " -X " + pkg + "/internal/version.Date=" + date
 
-# Pinned tool versions (installed by `just tools`).
+# Pinned tool versions, used by the recipes below (and installed by `just tools`).
 golangci_version := "v2.14.0"
 govulncheck_version := "v1.8.0"
 goreleaser_version := "v2.18.2"
 actionlint_version := "v1.7.12"
 # Always the pinned version (CI uses the same); override with GOLANGCI_LINT=/path.
 golangci := "GOLANGCI_LINT_VERSION=" + golangci_version + " scripts/golangci-lint.sh"
-goreleaser := env("GORELEASER", "goreleaser")
-actionlint := env("ACTIONLINT", "actionlint")
+# Other tools run at their pinned version via `go run` (no install needed; cached
+# after the first run). Override with GOVULNCHECK=/GORELEASER=/ACTIONLINT=/path.
+govulncheck := env("GOVULNCHECK", "go run golang.org/x/vuln/cmd/govulncheck@" + govulncheck_version)
+goreleaser := env("GORELEASER", "go run github.com/goreleaser/goreleaser/v2@" + goreleaser_version)
+actionlint := env("ACTIONLINT", "go run github.com/rhysd/actionlint/cmd/actionlint@" + actionlint_version)
 
 # Target platforms for `just cross` (the ICMP code supports Linux and macOS).
 platforms := "linux/amd64 linux/arm64 darwin/amd64 darwin/arm64"
@@ -157,7 +160,7 @@ lint-ci:
 # Scan dependencies for known vulnerabilities
 [group('quality')]
 vuln:
-    govulncheck ./...
+    {{ govulncheck }} ./...
 
 # Tidy go.mod / go.sum
 [group('quality')]

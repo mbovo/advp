@@ -208,13 +208,19 @@ If stdout is not a terminal, `--live` falls back to normal line output.
 
 ## Development
 
-You need Go (see `go.mod`) and [just](https://github.com/casey/just).
-Run `just tools` once to install the pinned golangci-lint, govulncheck,
-GoReleaser and actionlint. The lint and format recipes always use the pinned
-golangci-lint v2 (the same version as CI), through `scripts/golangci-lint.sh`.
-If the `golangci-lint` on your PATH is a different version, for example v1,
-the pinned one is installed once into `~/.cache/advp/` and used instead.
-Set `GOLANGCI_LINT=/path/to/binary` to force a specific binary. Then:
+You need Go (see `go.mod`) and [just](https://github.com/casey/just). The
+recipes don't need any other tool installed: they always use the versions
+pinned in the `justfile`, which are the same as CI.
+
+- **golangci-lint v2** runs through `scripts/golangci-lint.sh`. It uses the one
+  on your PATH if it is exactly the pinned version. Otherwise it installs the
+  pinned version once into `~/.cache/advp/`.
+- **govulncheck, GoReleaser and actionlint** run with `go run <tool>@<version>`.
+  They are downloaded and cached by Go the first time.
+
+To use specific binaries instead, set `GOLANGCI_LINT`, `GOVULNCHECK`,
+`GORELEASER` or `ACTIONLINT` to their paths. `just tools` installs the pinned
+versions into `$GOBIN` if you also want them on your PATH. Then:
 
 | Recipe | What it does |
 |---|---|

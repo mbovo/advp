@@ -34,9 +34,14 @@ Use the `justfile` (`just` lists every recipe). The essentials:
 | `just release-check` / `just release-snapshot` | GoReleaser config check / local snapshot into `dist/` |
 | `just tools` | install the pinned golangci-lint **v2**, govulncheck, GoReleaser, actionlint |
 
-Tool binaries can be overridden with `GOLANGCI_LINT`, `GORELEASER` and
-`ACTIONLINT`. `.golangci.yml` sets `build-tags: [smoke]`, so the smoke tests are
-linted too; vet them with `go vet -tags smoke`.
+No recipe requires a preinstalled tool. golangci-lint goes through the wrapper
+below, while govulncheck, GoReleaser and actionlint run as `go run pkg@<pinned>`
+(the same as CI for govulncheck). Override any of them with `GOLANGCI_LINT`,
+`GOVULNCHECK`, `GORELEASER` or `ACTIONLINT`. Pinned versions live at the top of
+the justfile; keep them in sync with the workflows.
+
+`.golangci.yml` sets `build-tags: [smoke]`, so the smoke tests are linted too;
+vet them with `go vet -tags smoke`.
 
 The lint config is golangci-lint **v2** format (`.golangci.yml`). golangci-lint
 v1.x refuses it, and cannot load Go 1.27 export data anyway.
