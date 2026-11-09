@@ -1,7 +1,8 @@
-package main
+// Package ping implements an iputils compatible ping session that also
+// probes the first hops and collects samples for the extended report.
+package ping
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -11,68 +12,24 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/mbovo/advp/internal/icmp"
+	"github.com/mbovo/advp/internal/report"
+	"github.com/mbovo/advp/internal/stats"
 )
-
-// icmpConn abstracts an ICMP socket so the engine can be tested without
-// network access.
-type icmpConn interface {
-	Send(pkt []byte) (time.Time, error)
-	Read(timeout time.Duration) (Event, bool, error)
-	ID() uint16
-	FilterID() bool
-	Raw() bool
-	Close() error
-}
-
-type sockConfig struct {
-	V6          bool
-	Dst         net.IP
-	Zone        string
-	TTL         int
-	TOS         int
-	Src         net.IP
-	IfName      string
-	IfIndex     int
-	Mark        int
-	MarkSet     bool
-	PMTU        string
-	Broadcast   bool
-	DontRoute   bool
-	Debug       bool
-	NoMcastLoop bool
-	Connect     bool
-	RecordRoute bool
-	PreferRaw   bool
-	SndBuf      int
-	Ident       int
-	Warnings    *[]string
-}
-
-func (c *sockConfig) warn(s string) {
-	if c.Warnings != nil {
-		*c.Warnings = append(*c.Warnings, s)
-	}
-}
 
 type connEvent struct {
 	idx int // 0 = target socket, k = hop k
-	ev  Event
+	ev  icmp.Event
 	err error
-}
-
-type hopAddr struct {
-	IP    string
-	First time.Time
-	Last  time.Time
-	Count int
 }
 
 type hopState struct {
 	ttl    int
-	conn   icmpConn
-	series *Series
+	conn   icmp.Conn
+	series *stats.Series
 	seq    int
-	addrs  []hopAddr
+	addrs  []report.HopAddr
 	cur    string
 }
 
@@ -86,7 +43,7 @@ func (h *hopState) note(ip string, at time.Time) (changed bool) {
 			return changed
 		}
 	}
-	h.addrs = append(h.addrs, hopAddr{IP: ip, First: at, Last: at, Count: 1})
+	h.addrs = append(h.addrs, report.HopAddr{IP: ip, First: at, Last: at, Count: 1})
 	h.cur = ip
 	return true
 }
@@ -100,9 +57,9 @@ type Pinger struct {
 	dst      net.IP
 	v6       bool
 	isName   bool
-	conn     icmpConn
+	conn     icmp.Conn
 	hops     []*hopState
-	series   *Series
+	series   *stats.Series
 	names    *nameCache
 	sigs     <-chan os.Signal
 	color    bool
@@ -122,14 +79,63 @@ type Pinger struct {
 	sendTimer    *time.Timer
 	lastRR       string
 	stopping     bool
-	exitTimerSet bool
 	sendingDone  bool
 
 	events chan connEvent
 	done   chan struct{}
 	wg     sync.WaitGroup
 	recent []string
-	dash   *dashboard
+	dash   *report.Dashboard
+}
+
+// Config wires a Pinger to its sockets, output and environment.
+type Config struct {
+	Options *Options
+	// Host is the destination as given by the user; Dst its resolved address.
+	Host   string
+	Dst    net.IP
+	IsName bool
+	// Conn is the socket used for the destination; HopConns[i] probes TTL i+1.
+	Conn     icmp.Conn
+	HopConns []icmp.Conn
+	Stdout   io.Writer
+	Stderr   io.Writer
+	// Signals delivers SIGINT/SIGTERM (stop) and SIGQUIT (status line).
+	Signals <-chan os.Signal
+	Color   bool
+	// Privileged relaxes the minimum interval like iputils does for root.
+	Privileged bool
+	// SockKind describes the socket type in the report.
+	SockKind string
+	// Dashboard enables the live full-screen view (Stdout must be a terminal).
+	Dashboard bool
+}
+
+// New returns a Pinger ready to Run. The Pinger takes ownership of the
+// connections and closes them when Run returns.
+func New(c Config) *Pinger {
+	p := &Pinger{
+		opt: c.Options, out: c.Stdout, errOut: c.Stderr, host: c.Host, dst: c.Dst,
+		v6: c.Dst.To4() == nil, isName: c.IsName, conn: c.Conn, sigs: c.Signals,
+		color: c.Color, root: c.Privileged, sockKind: c.SockKind, names: newNameCache(),
+	}
+	for i, hc := range c.HopConns {
+		p.hops = append(p.hops, &hopState{ttl: i + 1, conn: hc, series: stats.NewSeries()})
+	}
+	if c.Dashboard {
+		p.dash = report.NewDashboard(c.Stdout, c.Color)
+	}
+	return p
+}
+
+func (p *Pinger) renderDash(now time.Time) {
+	state := "running"
+	if p.sendingDone {
+		state = "waiting for last replies"
+	}
+	in := p.reportInput(now, false)
+	in.End = now
+	p.dash.Render(in, report.DashStatus{Title: p.targetString(), State: state, Elapsed: now.Sub(p.start), Recent: p.recent})
 }
 
 func (p *Pinger) targetString() string {
@@ -218,7 +224,7 @@ func (p *Pinger) canSend() bool {
 	return p.ntransmitted < p.opt.Count
 }
 
-func (p *Pinger) reader(idx int, c icmpConn) {
+func (p *Pinger) reader(idx int, c icmp.Conn) {
 	defer p.wg.Done()
 	for {
 		select {
@@ -254,8 +260,8 @@ func (p *Pinger) sendProbe() {
 	}
 	p.ntransmitted++
 	seq := p.ntransmitted
-	payload := buildPayload(p.opt.Size, p.opt.Pattern, time.Now())
-	pkt := buildEcho(p.v6, p.conn.ID(), uint16(seq), payload)
+	payload := icmp.BuildPayload(p.opt.Size, p.opt.Pattern, time.Now())
+	pkt := icmp.BuildEcho(p.v6, p.conn.ID(), uint16(seq), payload)
 	sent, err := p.conn.Send(pkt)
 	s := p.series.Add(seq, sent)
 	p.lastSend = sent
@@ -264,7 +270,7 @@ func (p *Pinger) sendProbe() {
 		p.nerrors++
 		if p.opt.Flood && !p.opt.Quiet && p.dash == nil {
 			io.WriteString(p.out, "E")
-		} else if !p.opt.Quiet && !(errors.Is(err, syscall.EMSGSIZE) && hasErrQueue(p.conn)) {
+		} else if !p.opt.Quiet && !(errors.Is(err, syscall.EMSGSIZE) && icmp.HasErrQueue(p.conn)) {
 			p.eprintf("advp: sendmsg: %v\n", err)
 		}
 		return
@@ -280,7 +286,7 @@ func (p *Pinger) sendProbe() {
 func (p *Pinger) sendHopProbes() {
 	for _, h := range p.hops {
 		h.seq++
-		pkt := buildEcho(p.v6, h.conn.ID(), uint16(h.seq), buildPayload(p.opt.Size, p.opt.Pattern, time.Now()))
+		pkt := icmp.BuildEcho(p.v6, h.conn.ID(), uint16(h.seq), icmp.BuildPayload(p.opt.Size, p.opt.Pattern, time.Now()))
 		sent, err := h.conn.Send(pkt)
 		s := h.series.Add(h.seq, sent)
 		if err != nil {
@@ -303,9 +309,9 @@ func (p *Pinger) handle(ce connEvent) {
 	}
 }
 
-func (p *Pinger) handleMain(ev Event) {
+func (p *Pinger) handleMain(ev icmp.Event) {
 	switch ev.Kind {
-	case EvReply:
+	case icmp.KindReply:
 		s := p.series.Lookup(ev.Seq)
 		if s == nil {
 			if p.opt.Verbose {
@@ -340,7 +346,7 @@ func (p *Pinger) handleMain(ev Event) {
 		if (p.opt.Flood || p.opt.Adaptive) && s.Seq == p.ntransmitted && p.canSend() {
 			p.sendSoon()
 		}
-	case EvError:
+	case icmp.KindError:
 		if ev.Local {
 			// Local errors carry no packet, so no sequence number; the failed
 			// send was already accounted for in sendProbe.
@@ -350,7 +356,7 @@ func (p *Pinger) handleMain(ev Event) {
 			if p.opt.Flood && p.dash == nil {
 				io.WriteString(p.out, "E")
 			} else {
-				p.eprintf("advp: %s\n", localErrorText(&ev))
+				p.eprintf("advp: %s\n", icmp.LocalErrorText(&ev))
 			}
 			return
 		}
@@ -369,12 +375,12 @@ func (p *Pinger) handleMain(ev Event) {
 		} else if !p.opt.Quiet {
 			p.printf("%sFrom %s icmp_seq=%d %s\n", p.tsPrefix(ev.At),
 				p.fmtAddr(ev.From, !p.opt.Numeric, 500*time.Millisecond), s.Seq,
-				icmpErrorText(p.v6, ev.Type, ev.Code, ev.Info))
+				icmp.ErrorText(p.v6, ev.Type, ev.Code, ev.Info))
 		}
 		if p.opt.Deadline > 0 {
 			p.stopping = true
 		}
-	case EvOther:
+	case icmp.KindOther:
 		if p.opt.Verbose && !p.opt.Quiet {
 			p.printf("%sFrom %s: icmp type=%d code=%d size=%d\n", p.tsPrefix(ev.At), ev.From, ev.Type, ev.Code, ev.Size)
 		}
@@ -384,7 +390,7 @@ func (p *Pinger) handleMain(ev Event) {
 	}
 }
 
-func (p *Pinger) printReply(ev Event, s *Sample, rtt time.Duration, dup bool) {
+func (p *Pinger) printReply(ev icmp.Event, s *stats.Sample, rtt time.Duration, dup bool) {
 	if p.opt.Quiet {
 		return
 	}
@@ -424,8 +430,8 @@ func (p *Pinger) printReply(ev Event, s *Sample, rtt time.Duration, dup bool) {
 	p.printf("%s", b.String())
 }
 
-func (p *Pinger) handleHop(h *hopState, ev Event) {
-	if ev.Kind == EvOther || ev.Local {
+func (p *Pinger) handleHop(h *hopState, ev icmp.Event) {
+	if ev.Kind == icmp.KindOther || ev.Local {
 		return
 	}
 	s := h.series.Lookup(ev.Seq)
@@ -438,13 +444,13 @@ func (p *Pinger) handleHop(h *hopState, ev Event) {
 	}
 	s.Received, s.RTT, s.TTL, s.Err = true, rtt, ev.TTL, false
 	s.From = ev.From.String()
-	s.Reached = ev.Kind == EvReply
+	s.Reached = ev.Kind == icmp.KindReply
 	if h.note(s.From, ev.At) && !p.opt.Quiet && !(p.opt.Flood && p.dash == nil) {
 		what := ""
 		if s.Reached {
 			what = " (destination)"
-		} else if !ev.isTimeExceeded(p.v6) {
-			what = " " + icmpErrorText(p.v6, ev.Type, ev.Code, ev.Info)
+		} else if !ev.IsTimeExceeded(p.v6) {
+			what = " " + icmp.ErrorText(p.v6, ev.Type, ev.Code, ev.Info)
 		}
 		verb := "hop"
 		if len(h.addrs) > 1 {
@@ -508,8 +514,8 @@ func (p *Pinger) exitWait() time.Duration {
 func (p *Pinger) Run() int {
 	p.events = make(chan connEvent, 1024)
 	p.done = make(chan struct{})
-	p.series = newSeries()
-	conns := []icmpConn{p.conn}
+	p.series = stats.NewSeries()
+	conns := []icmp.Conn{p.conn}
 	for _, h := range p.hops {
 		conns = append(conns, h.conn)
 	}
@@ -528,7 +534,7 @@ func (p *Pinger) Run() int {
 		fmt.Fprintf(p.out, "PING %s (%s) %d(%d) bytes of data.\n", p.host, p.dst, p.opt.Size, p.opt.Size+8+20+optlen)
 	}
 	if p.dash != nil {
-		p.dash.begin()
+		p.dash.Begin()
 	}
 
 	p.start = time.Now()
@@ -559,7 +565,7 @@ func (p *Pinger) Run() int {
 		t := time.NewTicker(500 * time.Millisecond)
 		defer t.Stop()
 		renderC = t.C
-		p.dash.render(p, time.Now())
+		p.renderDash(time.Now())
 	}
 
 	checkSendingDone := func() {
@@ -592,7 +598,7 @@ func (p *Pinger) Run() int {
 		case <-exitC:
 			p.stopping = true
 		case <-renderC:
-			p.dash.render(p, time.Now())
+			p.renderDash(time.Now())
 		case sig := <-p.sigs:
 			if sig == syscall.SIGQUIT {
 				if p.dash == nil {
@@ -612,7 +618,7 @@ func (p *Pinger) Run() int {
 		c.Close()
 	}
 	if p.dash != nil {
-		p.dash.end()
+		p.dash.End()
 	}
 	return p.finish()
 }
@@ -624,7 +630,7 @@ func (p *Pinger) printStatus() {
 	}
 	fmt.Fprintf(p.errOut, "\r%d/%d packets, %d%% loss", p.nreceived, p.ntransmitted, loss)
 	if p.nreceived > 0 {
-		a := aggregate(p.series.Samples, time.Now(), p.lostAfter())
+		a := stats.Aggregate(p.series.Samples, time.Now(), p.lostAfter())
 		fmt.Fprintf(p.errOut, ", min/avg/ewma/max = %s/%s/%s/%s ms",
 			ms3(a.Min), ms3(a.Avg), ms3(time.Duration(p.ewma/8)), ms3(a.Max))
 	}
@@ -636,7 +642,7 @@ func (p *Pinger) finish() int {
 	if p.opt.Flood && !p.opt.Quiet {
 		fmt.Fprintln(p.out)
 	}
-	a := aggregate(p.series.Samples, p.end, 0)
+	a := stats.Aggregate(p.series.Samples, p.end, 0)
 	fmt.Fprintf(p.out, "\n--- %s ping statistics ---\n", p.host)
 	fmt.Fprintf(p.out, "%d packets transmitted, %d received", p.ntransmitted, p.nreceived)
 	if p.nrepeats > 0 {
@@ -666,17 +672,17 @@ func (p *Pinger) finish() int {
 
 	if !p.opt.NoReport && p.ntransmitted > 0 {
 		in := p.reportInput(p.end, true)
-		writeReport(p.out, in)
+		report.Write(p.out, in)
 	}
 	if p.opt.CSV != "" {
-		if err := writeCSV(p.opt.CSV, p.reportInput(p.end, true)); err != nil {
+		if err := report.WriteCSV(p.opt.CSV, p.reportInput(p.end, true)); err != nil {
 			fmt.Fprintf(p.errOut, "advp: csv: %v\n", err)
 		} else if !p.opt.Quiet {
 			fmt.Fprintf(p.out, "CSV written to %s\n", p.opt.CSV)
 		}
 	}
 	if p.opt.HTML != "" {
-		if err := writeHTML(p.opt.HTML, p.reportInput(p.end, true)); err != nil {
+		if err := report.WriteHTML(p.opt.HTML, p.reportInput(p.end, true)); err != nil {
 			fmt.Fprintf(p.errOut, "advp: html: %v\n", err)
 		} else if !p.opt.Quiet {
 			fmt.Fprintf(p.out, "HTML report written to %s\n", p.opt.HTML)
@@ -689,18 +695,18 @@ func (p *Pinger) finish() int {
 	return 1
 }
 
-func (p *Pinger) reportInput(now time.Time, final bool) *reportInput {
+func (p *Pinger) reportInput(now time.Time, final bool) *report.Input {
 	lost := p.lostAfter()
 	if final {
 		lost = 0
 	}
 	end := now
-	in := &reportInput{
+	in := &report.Input{
 		Host: p.host, IP: p.dst.String(), Target: p.targetString(), V6: p.v6,
 		Start: p.start, End: end, Now: now, LostAfter: lost, Final: final,
 		Interval: p.opt.Interval, Size: p.opt.Size, SockKind: p.sockKind,
 		Main: p.series.Samples, Bucket: p.opt.Bucket, ChartHeight: p.opt.ChartHeight,
-		Width: termWidth(), Color: p.color, Errors: p.nerrors,
+		Width: report.TermWidth(), Color: p.color, Errors: p.nerrors,
 	}
 	in.Name = func(ip string) string {
 		if p.opt.Numeric {
@@ -709,99 +715,7 @@ func (p *Pinger) reportInput(now time.Time, final bool) *reportInput {
 		return p.names.Lookup(ip, 300*time.Millisecond)
 	}
 	for _, h := range p.hops {
-		in.Hops = append(in.Hops, hopView{TTL: h.ttl, Samples: h.series.Samples, Addrs: h.addrs})
+		in.Hops = append(in.Hops, report.HopView{TTL: h.ttl, Samples: h.series.Samples, Addrs: h.addrs})
 	}
 	return in
-}
-
-// formatRTT reproduces iputils' rounding of the per-reply time.
-func formatRTT(d time.Duration, precise bool) string {
-	us := d.Microseconds()
-	if precise {
-		return fmt.Sprintf("%d.%03d", us/1000, us%1000)
-	}
-	switch {
-	case us >= 100000-50:
-		return fmt.Sprintf("%d", (us+500)/1000)
-	case us >= 10000-5:
-		return fmt.Sprintf("%d.%01d", (us+50)/1000, ((us+50)%1000)/100)
-	case us >= 1000:
-		return fmt.Sprintf("%d.%02d", (us+5)/1000, ((us+5)%1000)/10)
-	default:
-		return fmt.Sprintf("%d.%03d", us/1000, us%1000)
-	}
-}
-
-// ms3 formats a duration as milliseconds with microsecond precision.
-func ms3(d time.Duration) string {
-	us := d.Microseconds()
-	return fmt.Sprintf("%d.%03d", us/1000, us%1000)
-}
-
-type nameCache struct {
-	mu sync.Mutex
-	m  map[string]*nameEntry
-}
-
-type nameEntry struct {
-	done chan struct{}
-	name string
-}
-
-func newNameCache() *nameCache { return &nameCache{m: map[string]*nameEntry{}} }
-
-// Lookup returns the reverse DNS name of ip, waiting at most wait for an
-// in-flight lookup; results are cached.
-func (c *nameCache) Lookup(ip string, wait time.Duration) string {
-	if c == nil {
-		return ""
-	}
-	c.mu.Lock()
-	e, ok := c.m[ip]
-	if !ok {
-		e = &nameEntry{done: make(chan struct{})}
-		c.m[ip] = e
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-			if names, err := net.DefaultResolver.LookupAddr(ctx, ip); err == nil && len(names) > 0 {
-				e.name = strings.TrimSuffix(names[0], ".")
-			}
-			close(e.done)
-		}()
-	}
-	c.mu.Unlock()
-	if wait <= 0 {
-		select {
-		case <-e.done:
-			return e.name
-		default:
-			return ""
-		}
-	}
-	t := time.NewTimer(wait)
-	defer t.Stop()
-	select {
-	case <-e.done:
-		return e.name
-	case <-t.C:
-		return ""
-	}
-}
-
-// hasErrQueue reports whether local send errors are also delivered through
-// the socket error queue (Linux IP_RECVERR), where they are printed with details.
-func hasErrQueue(c icmpConn) bool {
-	q, ok := c.(interface{ HasErrQueue() bool })
-	return ok && q.HasErrQueue()
-}
-
-// guessHops estimates the hop distance from a received TTL.
-func guessHops(ttl int) (initial, hops int) {
-	for _, i := range []int{32, 64, 128, 255} {
-		if ttl <= i {
-			return i, i - ttl
-		}
-	}
-	return 0, 0
 }

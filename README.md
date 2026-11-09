@@ -19,12 +19,14 @@ the whole session:
 - **Exports**: `--csv` writes every probe; `--html` writes a self-contained
   report with SVG charts that show values on hover.
 
-## Build
+## Install / build
 
 ```sh
-go build -o advp .
+go install github.com/mbovo/advp/cmd/advp@latest   # or
+just build                                          # → bin/advp
 ```
 
+Prebuilt binaries for each tagged release are on the GitHub Releases page.
 Supported on Linux and macOS.
 
 ## Privileges
@@ -122,11 +124,42 @@ Durations accept Go syntax (`500ms`, `1m30s`) or seconds (`0.5`).
 
 ## Development
 
-```sh
-go test -race ./...
-GOOS=linux go vet ./...
+You need Go (see `go.mod`) and [just](https://github.com/casey/just).
+Run `just tools` once to install the pinned golangci-lint, govulncheck and
+GoReleaser. Then:
+
+| Recipe | What it does |
+|---|---|
+| `just build` / `just run -c 5 1.1.1.1` | build `bin/advp` with version info / build and run it |
+| `just install` | `go install` with version info |
+| `just cross` | cross-compile linux/darwin × amd64/arm64 into `dist/` |
+| `just test`, `just test-race` | unit tests (`just test -run Pinger -v` passes flags through) |
+| `just cover`, `just cover-html` | coverage summary / browser report |
+| `just smoke` | real ICMP ping to 127.0.0.1 with the built binary |
+| `just fmt`, `just fmt-check` | gofmt + goimports |
+| `just vet`, `just lint`, `just lint-fix` | `go vet` and golangci-lint, run once per GOOS (darwin and linux) |
+| `just vuln` | govulncheck |
+| `just tidy`, `just tidy-check` | `go mod tidy` |
+| `just check` | everything CI runs |
+| `just setcap`, `just ping-group` | Linux: grant `cap_net_raw` / enable ping sockets (sudo) |
+| `just release-check`, `just release-snapshot` | validate GoReleaser config / local snapshot build |
+| `just tag v1.2.3` | tag and push; the Release workflow publishes binaries |
+| `just clean` | remove build output |
+
+### Layout
+
+```
+cmd/advp/            main package (thin wrapper around internal/cli)
+internal/cli/        iputils-compatible option parsing, resolution, socket setup
+internal/ping/       ping engine: scheduling, reply matching, hop probes, iputils output
+internal/icmp/       ICMP encode/decode and sockets (socket_linux.go, socket_darwin.go)
+internal/stats/      samples, loss/percentile/jitter aggregation, time buckets
+internal/report/     terminal report and charts, live dashboard, CSV and HTML export
+internal/version/    build metadata injected with -ldflags (falls back to VCS info)
+.github/workflows/   CI (lint, tests on Linux and macOS, ICMP smoke test, govulncheck) and release
 ```
 
 The tests drive the full engine (sending, replies, loss, duplicates,
-ICMP errors, hop route changes, report and exports) with a simulated
-network transport, so they need no privileges or network access.
+ICMP errors, hop route changes, report and exports) through a simulated
+network connection (`icmp.Conn`), so they need no privileges or network
+access.

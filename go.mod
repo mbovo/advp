@@ -1,4 +1,4 @@
-module advp
+module github.com/mbovo/advp
 
 go 1.26.0
 

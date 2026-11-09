@@ -1,4 +1,4 @@
-package main
+package report
 
 import (
 	"fmt"
@@ -10,15 +10,31 @@ import (
 	"golang.org/x/term"
 )
 
-// dashboard is a full-screen live view redrawn periodically on the
+// Dashboard is a full-screen live view redrawn periodically on the
 // terminal's alternate screen.
-type dashboard struct {
+type Dashboard struct {
 	w  io.Writer
 	st style
 }
 
-func (d *dashboard) begin() { fmt.Fprint(d.w, "\x1b[?1049h\x1b[?25l\x1b[H\x1b[2J") }
-func (d *dashboard) end()   { fmt.Fprint(d.w, "\x1b[?25h\x1b[?1049l") }
+// DashStatus is the session state shown in the dashboard header.
+type DashStatus struct {
+	Title   string
+	State   string
+	Elapsed time.Duration
+	Recent  []string // latest per-packet lines, oldest first
+}
+
+// NewDashboard returns a dashboard writing to w.
+func NewDashboard(w io.Writer, color bool) *Dashboard {
+	return &Dashboard{w: w, st: style{on: color}}
+}
+
+// Begin switches to the alternate screen and hides the cursor.
+func (d *Dashboard) Begin() { fmt.Fprint(d.w, "\x1b[?1049h\x1b[?25l\x1b[H\x1b[2J") }
+
+// End restores the normal screen and the cursor.
+func (d *Dashboard) End() { fmt.Fprint(d.w, "\x1b[?25h\x1b[?1049l") }
 
 func termSize() (int, int) {
 	if w, h, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 20 && h > 5 {
@@ -52,19 +68,13 @@ func truncANSI(s string, w int) string {
 	return b.String() + "\x1b[0m"
 }
 
-func (d *dashboard) render(p *Pinger, now time.Time) {
+// Render draws one frame. in.Width is overridden with the terminal width.
+func (d *Dashboard) Render(in *Input, s DashStatus) {
 	width, height := termSize()
-	in := p.reportInput(now, false)
 	in.Width = width
-	in.End = now
 	st := d.st
-
-	state := "running"
-	if p.sendingDone {
-		state = "waiting for last replies"
-	}
 	head := []string{
-		st.bold("advp ▸ PING "+p.targetString()) + st.dim(fmt.Sprintf("  %s %s · Ctrl-C stop & report · Ctrl-\\ status", state, fmtDur(now.Sub(p.start)))),
+		st.bold("advp ▸ PING "+s.Title) + st.dim(fmt.Sprintf("  %s %s · Ctrl-C stop & report · Ctrl-\\ status", s.State, fmtDur(s.Elapsed))),
 	}
 	head = append(head, summaryLines(in, st)...)
 	if hl := hopTable(in, st); len(hl) > 0 {
@@ -72,8 +82,8 @@ func (d *dashboard) render(p *Pinger, now time.Time) {
 	}
 
 	recentN := 4
-	if len(p.recent) < recentN {
-		recentN = len(p.recent)
+	if len(s.Recent) < recentN {
+		recentN = len(s.Recent)
 	}
 	tlRows := 5
 	extras := 4 + len(in.Hops) // chart title, axis, time labels, loss, jitter, hops
@@ -95,7 +105,7 @@ func (d *dashboard) render(p *Pinger, now time.Time) {
 	}
 	if recentN > 0 {
 		lines = append(lines, "")
-		for _, r := range p.recent[len(p.recent)-recentN:] {
+		for _, r := range s.Recent[len(s.Recent)-recentN:] {
 			lines = append(lines, st.dim(r))
 		}
 	}

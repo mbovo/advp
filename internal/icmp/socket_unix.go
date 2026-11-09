@@ -1,6 +1,6 @@
 //go:build linux || darwin
 
-package main
+package icmp
 
 import (
 	"encoding/binary"
@@ -28,7 +28,10 @@ type sockConn struct {
 	buf, oob  []byte
 }
 
-func openICMP(cfg sockConfig) (icmpConn, error) {
+// Open creates and configures an ICMP socket. It prefers an unprivileged
+// datagram socket and falls back to a raw socket (the order is reversed for
+// root or when cfg.PreferRaw is set).
+func Open(cfg Config) (Conn, error) {
 	domain, proto := unix.AF_INET, unix.IPPROTO_ICMP
 	if cfg.V6 {
 		domain, proto = unix.AF_INET6, unix.IPPROTO_ICMPV6
@@ -55,12 +58,12 @@ func openICMP(cfg sockConfig) (icmpConn, error) {
 		return c, nil
 	}
 	if errors.Is(firstErr, unix.EACCES) || errors.Is(firstErr, unix.EPERM) {
-		return nil, fmt.Errorf("socket: %v (unprivileged ICMP sockets are not allowed; check net.ipv4.ping_group_range or run as root)", firstErr)
+		return nil, fmt.Errorf("socket: %w (unprivileged ICMP sockets are not allowed; check net.ipv4.ping_group_range or run as root)", firstErr)
 	}
-	return nil, fmt.Errorf("socket: %v", firstErr)
+	return nil, fmt.Errorf("socket: %w", firstErr)
 }
 
-func (c *sockConn) setup(cfg *sockConfig) error {
+func (c *sockConn) setup(cfg *Config) error {
 	fd := c.fd
 	unix.CloseOnExec(fd)
 	if err := unix.SetNonblock(fd, true); err != nil {
@@ -71,7 +74,7 @@ func (c *sockConn) setup(cfg *sockConfig) error {
 	setInt := func(level, opt, v int, name string, fatal bool) error {
 		if err := unix.SetsockoptInt(fd, level, opt, v); err != nil {
 			if fatal {
-				return fmt.Errorf("%s: %v", name, err)
+				return fmt.Errorf("%s: %w", name, err)
 			}
 			cfg.warn(fmt.Sprintf("%s: %v", name, err))
 		}
@@ -158,7 +161,7 @@ func (c *sockConn) setup(cfg *sockConfig) error {
 			sa = s
 		}
 		if err := unix.Bind(fd, sa); err != nil {
-			return fmt.Errorf("bind: %v", err)
+			return fmt.Errorf("bind: %w", err)
 		}
 	}
 
@@ -184,7 +187,7 @@ func (c *sockConn) setup(cfg *sockConfig) error {
 
 	if cfg.Connect {
 		if err := unix.Connect(fd, c.dst); err != nil {
-			return fmt.Errorf("connect: %v", err)
+			return fmt.Errorf("connect: %w", err)
 		}
 		c.connected = true
 	}
@@ -294,7 +297,7 @@ func (c *sockConn) Read(timeout time.Duration) (Event, bool, error) {
 		return Event{}, false, nil
 	}
 	ev.From, ev.TTL, ev.At, ev.Route = sockaddrIP(from), ttl, at, route
-	if c.filterID && ev.Kind != EvOther && ev.ID != c.id {
+	if c.filterID && ev.Kind != KindOther && ev.ID != c.id {
 		return Event{}, false, nil
 	}
 	return ev, true, nil
@@ -314,7 +317,7 @@ func parseCmsgs(oob []byte) (ttl int, ts time.Time) {
 		case m.Header.Level == unix.SOL_SOCKET && m.Header.Type == unix.SCM_TIMESTAMP:
 			if len(m.Data) >= int(unsafe.Sizeof(unix.Timeval{})) {
 				tv := (*unix.Timeval)(unsafe.Pointer(&m.Data[0]))
-				ts = time.Unix(int64(tv.Sec), int64(tv.Usec)*1000)
+				ts = time.Unix(tv.Unix())
 			}
 		case m.Header.Level == unix.IPPROTO_IP && m.Header.Type == ipTTLCmsgType:
 			ttl = cmsgInt(m.Data)
