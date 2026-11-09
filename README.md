@@ -23,7 +23,7 @@
 >
 >   | Resource | Estimate for this session | Assumption |
 >   |----------|---------------------------|------------|
->   | Energy   | ~0.2 – 0.9 kWh            | ~1–4 J per output token (≈0.3 Wh per typical query, higher with long context) + ~0.02–0.1 J per input token |
+>   | Energy   | ~0.2 – 0.9 kWh            | ~1–4 J per output token / ~0.02–0.1 J per input token |
 >   | CO₂      | ~0.1 – 0.35 kg CO₂e       | ~400 g CO₂e/kWh average grid mix |
 >   | Water    | ~0.4 – 1.6 L              | ~1.8 L/kWh datacenter cooling + power generation |
 >
